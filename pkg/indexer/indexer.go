@@ -13,12 +13,16 @@ import (
 )
 
 type Indexer struct {
-	client *client.Client
-	store  *storage.Store
+	client     *client.Client
+	store      *storage.Store
+	EmbedModel string // modèle d'embedding — depuis config.yaml
 }
 
-func New(c *client.Client, s *storage.Store) *Indexer {
-	return &Indexer{client: c, store: s}
+func New(c *client.Client, s *storage.Store, embedModel string) *Indexer {
+	if embedModel == "" {
+		embedModel = "nomic-embed-text:latest" // fallback
+	}
+	return &Indexer{client: c, store: s, EmbedModel: embedModel}
 }
 
 func (idx *Indexer) Index(dir string) error {
@@ -69,7 +73,7 @@ func (idx *Indexer) Index(dir string) error {
 			for j, c := range chunks {
 				texts[j] = c.Text
 			}
-			vecs, err := idx.client.Embed(texts, "nomic-embed-text:latest")
+			vecs, err := idx.client.Embed(texts, idx.EmbedModel)
 			if err != nil {
 				errs[batchIdx] = err
 				bar.Add(1)

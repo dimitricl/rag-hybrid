@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"fmt"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -263,10 +264,13 @@ func rerankChunks(query string, chunks []Chunk) ([]Chunk, error) {
 		})
 	}
 
-	body, _ := json.Marshal(input)
+	body, err := json.Marshal(input)
+	if err != nil {
+		return nil, fmt.Errorf("reranker marshal: %w", err)
+	}
 	// Timeout 500ms — si le reranker Python est down, on ne bloque pas le pipeline
-	client := &http.Client{Timeout: 500 * time.Millisecond}
-	resp, err := client.Post("http://127.0.0.1:8765", "application/json", bytes.NewReader(body))
+	httpClient := &http.Client{Timeout: 500 * time.Millisecond}
+	resp, err := httpClient.Post("http://127.0.0.1:8765", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}

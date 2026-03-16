@@ -22,7 +22,10 @@ func New(host string, port int) *Client {
 
 func (c *Client) Embed(texts []string, model string) ([][]float32, error) {
 	req := map[string]interface{}{"model": model, "input": texts}
-	data, _ := json.Marshal(req)
+	data, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("embed marshal: %w", err)
+	}
 	resp, err := c.HTTP.Post(c.BaseURL+"/api/embed", "application/json", bytes.NewBuffer(data))
 	if err != nil {
 		return nil, err
@@ -31,13 +34,21 @@ func (c *Client) Embed(texts []string, model string) ([][]float32, error) {
 	var result struct {
 		Embeddings [][]float32 `json:"embeddings"`
 	}
-	json.NewDecoder(resp.Body).Decode(&result)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("embed decode: %w", err)
+	}
+	if len(result.Embeddings) == 0 {
+		return nil, fmt.Errorf("embed: réponse vide du modèle %s", model)
+	}
 	return result.Embeddings, nil
 }
 
 func (c *Client) Generate(prompt, model string) (string, error) {
 	req := map[string]interface{}{"model": model, "prompt": prompt, "stream": false}
-	data, _ := json.Marshal(req)
+	data, err := json.Marshal(req)
+	if err != nil {
+		return "", fmt.Errorf("generate marshal: %w", err)
+	}
 	resp, err := c.HTTP.Post(c.BaseURL+"/api/generate", "application/json", bytes.NewBuffer(data))
 	if err != nil {
 		return "", err
@@ -46,47 +57,57 @@ func (c *Client) Generate(prompt, model string) (string, error) {
 	var result struct {
 		Response string `json:"response"`
 	}
-	json.NewDecoder(resp.Body).Decode(&result)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("generate decode: %w", err)
+	}
 	return result.Response, nil
 }
 
-// NOUVEAU : Génération streaming
 func (c *Client) GenerateStream(prompt, model string) (<-chan string, error) {
 	req := map[string]interface{}{"model": model, "prompt": prompt, "stream": true}
-	data, _ := json.Marshal(req)
-	
+	data, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("stream marshal: %w", err)
+	}
+
 	resp, err := c.HTTP.Post(c.BaseURL+"/api/generate", "application/json", bytes.NewBuffer(data))
 	if err != nil {
 		return nil, err
 	}
-	
+
 	out := make(chan string, 100)
-	
+
 	go func() {
 		defer close(out)
 		defer resp.Body.Close()
-		
+		// Récupère les panics dans la goroutine de streaming
+		defer func() {
+			if r := recover(); r != nil {
+				out <- fmt.Sprintf("[ERREUR STREAMING: %v]", r)
+			}
+		}()
+
 		decoder := json.NewDecoder(resp.Body)
 		for {
 			var streamResp struct {
 				Response string `json:"response"`
 				Done     bool   `json:"done"`
 			}
-			
+
 			if err := decoder.Decode(&streamResp); err != nil {
 				return
 			}
-			
+
 			if streamResp.Response != "" {
 				out <- streamResp.Response
 			}
-			
+
 			if streamResp.Done {
 				return
 			}
 		}
 	}()
-	
+
 	return out, nil
 }
 
@@ -97,7 +118,7 @@ func (c *Client) Health() error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("unhealthy")
+		return fmt.Errorf("unhealthy: HTTP %d", resp.StatusCode)
 	}
 	return nil
 }
