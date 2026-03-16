@@ -92,6 +92,12 @@ var ignoredFilenames = map[string]bool{
 	"NTC MF52 datasheet.pdf":                          true,
 	"5 mm Round White LED.pdf":                        true,
 	"presentation_Modèle_expo.md":                     true,
+	// Mini-projets BTS — contenu hors sujet technique
+	"TP_Sprint2.pdf":                                  true,
+	"TP-Sprint1-Pilotage simple.pdf":                  true,
+	"TP-Sprint3.pdf":                                  true,
+	// Source parasite — GPIO générique qui noie les questions ADC/registres
+	"Microcontrôleur 2-GPIO Les ports parallèles.pdf": true,
 }
 
 var extractedExts = map[string]bool{

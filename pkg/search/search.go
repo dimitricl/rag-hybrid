@@ -176,8 +176,45 @@ func IsLargeModel(model string) bool {
 	return false
 }
 
-func buildContext(results []storage.Chunk) (string, int, float32) {
+// extractKeywords extrait les mots techniques d'une question (>3 chars, hors stop-words).
+func extractKeywords(q string) []string {
+	stop := map[string]bool{
+		"comment": true, "quels": true, "quelle": true, "sont": true,
+		"pour": true, "avec": true, "dans": true, "sur": true,
+		"les": true, "des": true, "que": true, "qui": true,
+		"le": true, "la": true, "de": true, "du": true, "en": true,
+		"bits": true, "bit": true, "fonctionne": true, "utiliser": true,
+		"faire": true, "vers": true, "une": true, "est": true,
+	}
+	var kws []string
+	for _, w := range strings.Fields(strings.ToLower(q)) {
+		w = strings.Trim(w, "?.,;:!()")
+		if len([]rune(w)) > 3 && !stop[w] {
+			kws = append(kws, w)
+		}
+	}
+	return kws
+}
+
+// chunkRelevant vérifie qu'un chunk contient au moins 1 mot-clé de la question.
+// Filtre post-rerank : évite qu'un fichier hors-sujet remonte malgré un bon score cross-encoder.
+func chunkRelevant(chunk storage.Chunk, keywords []string) bool {
+	if len(keywords) == 0 {
+		return true
+	}
+	text := strings.ToLower(chunk.Text + " " + chunk.Filename)
+	for _, kw := range keywords {
+		if strings.Contains(text, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+func BuildContext(results []storage.Chunk, q string) (string, []storage.Chunk, int, float32) {
+	keywords := extractKeywords(q)
 	var ctx strings.Builder
+	var filtered []storage.Chunk
 	included := 0
 	var maxCosine float32
 
@@ -194,6 +231,10 @@ func buildContext(results []storage.Chunk) (string, int, float32) {
 		if r.Score < minDisplayScore {
 			continue
 		}
+		// Filtre post-rerank : exclut les chunks sans aucun mot-clé de la question
+		if !chunkRelevant(r, keywords) {
+			continue
+		}
 		if r.RRFRaw > maxCosine {
 			maxCosine = r.RRFRaw
 		}
@@ -201,11 +242,12 @@ func buildContext(results []storage.Chunk) (string, int, float32) {
 			"=== SOURCE %d : %s ===\n%s\n\n",
 			sourceNum, r.Filename, r.Text,
 		))
+		filtered = append(filtered, r)
 		seenFiles[r.Filename] = true
 		sourceNum++
 		included++
 	}
-	return ctx.String(), len(seenFiles), maxCosine
+	return ctx.String(), filtered, len(seenFiles), maxCosine
 }
 
 
@@ -326,7 +368,7 @@ func (e *Engine) AskWithModel(q, model string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	ctxStr, included, _ := buildContext(res)
+	ctxStr, _, included, _ := BuildContext(res, q)
 	if included == 0 {
 		return "Aucune source suffisamment pertinente trouvée. Essaie de reformuler.", nil
 	}
@@ -345,7 +387,7 @@ func (e *Engine) AskStreamWithModel(q, model string) (<-chan string, error) {
 	if err != nil {
 		return nil, err
 	}
-	ctxStr, included, _ := buildContext(res)
+	ctxStr, _, included, _ := BuildContext(res, q)
 	if included == 0 {
 		out := make(chan string, 1)
 		out <- "Aucune source suffisamment pertinente trouvée. Essaie de reformuler."
