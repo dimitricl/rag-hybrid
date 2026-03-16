@@ -1,0 +1,15 @@
+ollama:
+  host: "100.101.108.111"
+  port: 11434
+
+reranker:
+  host: "127.0.0.1"
+  port: 8765
+
+web:
+  port: 8080
+
+rag:
+  db_path: "~/.rag-hybrid"
+  embed_model: "nomic-embed-text:latest"
+  default_model: "mistral:7b-instruct"

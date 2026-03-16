@@ -1,0 +1,27 @@
+# Binaires compilés
+rag
+rag-chat
+rag-web
+
+# Cache et DB générés
+*.bin
+*.db
+embed_cache.json
+
+# macOS
+.DS_Store
+__MACOSX/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Fichiers temporaires de développement
+*.bak
+*.old
+*.backup
+*.older
+
+# Rapports de tests générés
+rapport_*.pdf
