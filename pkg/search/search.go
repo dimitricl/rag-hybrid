@@ -10,14 +10,14 @@ import (
 
 const minDisplayScore = -999.0 // Désactivé : le re-ranker cross-encoder gère le tri
 
-type questionType int
+type QuestionType int
 
 const (
-	qtRegister    questionType = iota
-	qtCode
-	qtConcept
-	qtCalculation
-	qtGeneral
+	QtRegister    QuestionType = iota
+	QtCode
+	QtConcept
+	QtCalculation
+	QtGeneral
 )
 
 type Engine struct {
@@ -55,7 +55,7 @@ func (e *Engine) Store() *storage.Store {
 	return e.store
 }
 
-func classifyQuestion(q string) questionType {
+func ClassifyQuestion(q string) QuestionType {
 	lower := strings.ToLower(q)
 
 	registerKW := []string{
@@ -65,7 +65,7 @@ func classifyQuestion(q string) questionType {
 	}
 	for _, kw := range registerKW {
 		if strings.Contains(lower, kw) {
-			return qtRegister
+			return QtRegister
 		}
 	}
 
@@ -77,7 +77,7 @@ func classifyQuestion(q string) questionType {
 	}
 	for _, kw := range codeKW {
 		if strings.Contains(lower, kw) {
-			return qtCode
+			return QtCode
 		}
 	}
 
@@ -88,7 +88,7 @@ func classifyQuestion(q string) questionType {
 	}
 	for _, kw := range calcKW {
 		if strings.Contains(lower, kw) {
-			return qtCalculation
+			return QtCalculation
 		}
 	}
 
@@ -98,15 +98,15 @@ func classifyQuestion(q string) questionType {
 	}
 	for _, kw := range conceptKW {
 		if strings.Contains(lower, kw) {
-			return qtConcept
+			return QtConcept
 		}
 	}
 
-	return qtGeneral
+	return QtGeneral
 }
 
-// detectPlatform analyse les chunks pour identifier la plateforme matérielle dominante.
-func detectPlatform(chunks []storage.Chunk) string {
+// DetectPlatform analyse les chunks pour identifier la plateforme matérielle dominante.
+func DetectPlatform(chunks []storage.Chunk) string {
 	counts := map[string]int{"atmega": 0, "stm32": 0, "esp32": 0, "arduino": 0}
 	keywords := map[string][]string{
 		"atmega":  {"ATmega", "ATmega328", "avr/io", "DDRB", "DDRD", "PORTB", "PORTD", "PINB", "PIND", "TCCR", "ADCSRA", "ADMUX", "avr/interrupt"},
@@ -163,6 +163,19 @@ func detectPlatform(chunks []storage.Chunk) string {
 	return labels[best]
 }
 
+
+// IsLargeModel retourne true pour les modèles capables de suivre des instructions complexes.
+func IsLargeModel(model string) bool {
+	largeModels := []string{"deepseek", "16b", "70b", "34b", "llama3", "gemma2", "qwen2.5:7b", "qwen2.5-coder:7b"}
+	lower := strings.ToLower(model)
+	for _, m := range largeModels {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
+}
+
 func buildContext(results []storage.Chunk) (string, int, float32) {
 	var ctx strings.Builder
 	included := 0
@@ -196,11 +209,11 @@ func buildContext(results []storage.Chunk) (string, int, float32) {
 }
 
 
-// checkCoherence vérifie que les sources couvrent réellement la question.
+// CheckCoherence vérifie que les sources couvrent réellement la question.
 // Stratégie : détecte les paires de concepts clés dans la question.
 // Si la question associe deux domaines distincts (ex: ADC + IR), vérifie
 // qu'au moins un chunk les contient ENSEMBLE. Sinon → non documenté.
-func checkCoherence(q string, chunks []storage.Chunk) bool {
+func CheckCoherence(q string, chunks []storage.Chunk) bool {
 	if len(chunks) == 0 {
 		return false
 	}
@@ -263,8 +276,8 @@ func checkCoherence(q string, chunks []storage.Chunk) bool {
 }
 
 func buildPrompt(ctxStr, q, model string, chunks []storage.Chunk) string {
-	qt := classifyQuestion(q)
-	platformHint := detectPlatform(chunks)
+	qt := ClassifyQuestion(q)
+	platformHint := DetectPlatform(chunks)
 
 	platformLine := ""
 	if platformHint != "" {
@@ -280,11 +293,11 @@ RÈGLE ABSOLUE 3 : AUCUNE connaissance externe. AUCUNE déduction. AUCUNE adapta
 	var specificPrompt string
 
 	switch qt {
-	case qtRegister:
+	case QtRegister:
 		specificPrompt = "Format attendu : Analyse des registres. Pour chaque bit, donne le nom exact et la description depuis la source. Cite le fichier. Si un bit manque : 'non documenté'."
-	case qtCode:
+	case QtCode:
 		specificPrompt = fmt.Sprintf("Format attendu : Programmation.%s\nFournis des explications ou du code basés UNIQUEMENT sur les sources. Ne comble pas les trous avec tes connaissances.", platformLine)
-	case qtCalculation:
+	case QtCalculation:
 		specificPrompt = "Format attendu : Calcul étape par étape. Utilise UNIQUEMENT les formules et valeurs des sources. Vérifie les unités."
 	default:
 		specificPrompt = "Format attendu : Réponse textuelle structurée basée UNIQUEMENT sur les sources. Cite les fichiers."
@@ -317,7 +330,7 @@ func (e *Engine) AskWithModel(q, model string) (string, error) {
 	if included == 0 {
 		return "Aucune source suffisamment pertinente trouvée. Essaie de reformuler.", nil
 	}
-	if !checkCoherence(q, res) {
+	if !CheckCoherence(q, res) {
 		return "Cette combinaison de concepts n'est pas documentée dans les sources indexées.", nil
 	}
 	return e.client.Generate(buildPrompt(ctxStr, q, model, res), model)
@@ -339,7 +352,7 @@ func (e *Engine) AskStreamWithModel(q, model string) (<-chan string, error) {
 		close(out)
 		return out, nil
 	}
-	if !checkCoherence(q, res) {
+	if !CheckCoherence(q, res) {
 		out := make(chan string, 1)
 		out <- "Cette combinaison de concepts n'est pas documentée dans les sources indexées."
 		close(out)
