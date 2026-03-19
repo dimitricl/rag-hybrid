@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"bufio"
 	"encoding/binary"
 	"math"
 	"os"
@@ -126,7 +127,9 @@ func (s *Store) loadOrBuildHNSW(path string) *hnsw.Graph[string] {
 	if f, err := os.Open(path); err == nil {
 		defer f.Close()
 		g := hnsw.NewGraph[string]()
-		if err := g.Import(f); err == nil {
+		// Import nécessite un io.ByteReader — os.File ne l'implémente pas
+		// sans bufio, binary.Read retourne "does not implement io.ByteReader"
+		if err := g.Import(bufio.NewReader(f)); err == nil {
 			fmt.Printf("✅ Index HNSW chargé (%d vecteurs)\n", len(s.vecCache))
 			return g
 		}
