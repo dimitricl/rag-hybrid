@@ -95,6 +95,13 @@ func (idx *Indexer) Index(dir string) error {
 	}
 	if embedErrors > 0 {
 		fmt.Printf("⚠️  %d batches d'embedding en erreur (ignorés)\n", embedErrors)
+		// Affiche la première erreur pour diagnostiquer
+		for _, e := range errs {
+			if e != nil {
+				fmt.Printf("   Première erreur : %v\n", e)
+				break
+			}
+		}
 	}
 
 	// Reconstruction à plat dans l'ordre
