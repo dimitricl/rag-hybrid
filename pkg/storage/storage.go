@@ -1,19 +1,19 @@
 package storage
 
 import (
+	"bufio"
 	"bytes"
 	"database/sql"
-	"encoding/json"
-	"net/http"
-	"bufio"
 	"encoding/binary"
+	"encoding/json"
+	"fmt"
 	"math"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
-	"fmt"
 	"time"
 
 	"github.com/coder/hnsw"
@@ -36,9 +36,9 @@ type Store struct {
 	db       *sql.DB
 	vecs     *os.File
 	mu       sync.Mutex
-	vecCache map[string][]float32    // Cache RAM : clé = chunk.ID
-	hnswIdx  *hnsw.Graph[string]     // Index ANN : O(log n) au lieu de O(n)
-	hnswPath string                  // Chemin de persistance hnsw.bin
+	vecCache map[string][]float32 // Cache RAM : clé = chunk.ID
+	hnswIdx  *hnsw.Graph[string]  // Index ANN : O(log n) au lieu de O(n)
+	hnswPath string               // Chemin de persistance hnsw.bin
 }
 
 func New(base string) (*Store, error) {
@@ -263,9 +263,14 @@ func (s *Store) SearchSmart(query string, queryVec []float32, k int) ([]Chunk, e
 	rrfScores := make(map[string]float32)
 
 	const rrfConstant = 60.0
-	// Poids FTS augmenté (x2) pour compenser le gap sémantique
-	// entre questions françaises et contenu technique anglais du corpus
-	const ftsWeight = 2.0
+
+	// Détection de query technique : si la query contient des termes
+	// spécifiques (registres, acronymes, sigles), on booste fortement le FTS
+	// car bge-m3 a un gap sémantique avec le contenu technique anglais/tabulaire
+	ftsWeight := float32(2.0)
+	if isTechnicalQuery(query) {
+		ftsWeight = 5.0 // FTS dominante sur les questions registres/acronymes
+	}
 
 	for rank, hit := range vecHits {
 		chunkMap[hit.ID] = &vecHits[rank]
@@ -615,4 +620,23 @@ func (s *Store) Count() int {
 		return 0
 	}
 	return count
+}
+
+// isTechnicalQuery détecte si la query contient des termes techniques
+// qui nécessitent un boost FTS (acronymes, noms de registres, termes électronique)
+func isTechnicalQuery(q string) bool {
+	lower := strings.ToLower(q)
+	technicalTerms := []string{
+		"adcs", "admux", "tccr", "timsk", "portb", "ddrb", "ddrd",
+		"prescaler", "registre", "register", "bit ", "0x", "pwm",
+		"uart", "spi", "i2c", "twi", "isr", "int0", "int1",
+		"adps", "aden", "adsc", "adie", "adif", "refs",
+		"wgm", "com", "ocr", "icr", "tcnt",
+	}
+	for _, term := range technicalTerms {
+		if strings.Contains(lower, term) {
+			return true
+		}
+	}
+	return false
 }
