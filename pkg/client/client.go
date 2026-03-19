@@ -50,7 +50,7 @@ func (c *Client) Generate(prompt, model string) (string, error) {
 		"prompt": prompt,
 		"stream": false,
 		"options": map[string]interface{}{
-			"num_predict":    2048,
+			"num_predict":    1024,
 			"stop":           []string{"Utilisateur:", "User:", "QUESTION :"},
 			"temperature":    0.1,
 			"repeat_penalty": 1.5,
@@ -90,7 +90,7 @@ func (c *Client) GenerateStream(ctx context.Context, prompt, model string) (<-ch
 		"prompt": prompt,
 		"stream": true,
 		"options": map[string]interface{}{
-			"num_predict": 2048,  // Limite max tokens — empêche les boucles infinies
+			"num_predict": 1024,  // Limite max tokens — empêche les boucles infinies
 			"stop":        []string{"Utilisateur:", "User:", "QUESTION :", "\n\nUtilisateur", "\n\nUser"},
 			"temperature": 0.1,  // Faible température = moins d'hallucinations/répétitions
 			"repeat_penalty": 1.5,
