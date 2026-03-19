@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
+	"strings"
 )
 
 type OllamaConfig struct {
@@ -97,6 +98,9 @@ func Load() Config {
 	// Permet de changer l'IP Ollama sans toucher au fichier config
 	// Ex : OLLAMA_HOST=192.168.1.50 ./rag-web
 	if h := os.Getenv("OLLAMA_HOST"); h != "" {
+		h = strings.TrimPrefix(h, "https://")
+		h = strings.TrimPrefix(h, "http://")
+		if i := strings.LastIndex(h, ":"); i != -1 { h = h[:i] }
 		cfg.Ollama.Host = h
 	}
 	if p := os.Getenv("OLLAMA_PORT"); p != "" {
