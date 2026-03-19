@@ -71,17 +71,17 @@ TESTS = [
      ["SDA", "SCL", "maître", "esclave", "adresse", "horloge"],
      ["Communication série", "I2C", "série", "protocole", "liaison"]),
 
-    # Questions pièges — doit retourner "non documenté"
+    # Questions pièges — le fallback répond en LLM pur (hors corpus)
     ("Piège", "comment configurer l'ADC pour émettre une trame infrarouge ?",
-     ["non documenté", "concepts non liés", "combinaison"],
+     ["général", "connaissances", "assistant", "infrarouge", "ADC"],
      []),  # aucune source attendue
 
     ("Piège", "comment utiliser le protocole 802.1X pour faire du PWM ?",
-     ["non documenté", "concepts non liés", "combinaison", "Cette combinaison"],
+     ["général", "connaissances", "assistant", "802.1X", "PWM", "protocole"],
      []),
 
     ("Piège", "comment configurer l'UART pour envoyer des trames Ethernet ?",
-     ["non documenté", "concepts non liés", "combinaison"],
+     ["général", "connaissances", "assistant", "UART", "Ethernet"],
      []),
 ]
 
