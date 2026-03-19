@@ -23,12 +23,16 @@ const (
 )
 
 type Engine struct {
-	client *client.Client
-	store  *storage.Store
+	client     *client.Client
+	store      *storage.Store
+	embedModel string
 }
 
-func New(c *client.Client, s *storage.Store) *Engine {
-	return &Engine{client: c, store: s}
+func New(c *client.Client, s *storage.Store, embedModel string) *Engine {
+	if embedModel == "" {
+		embedModel = "nomic-embed-text:latest"
+	}
+	return &Engine{client: c, store: s, embedModel: embedModel}
 }
 
 // EXPORTÉ : Permet à main.go d'accéder à la DB
@@ -37,7 +41,7 @@ func (e *Engine) Store() *storage.Store {
 }
 
 func (e *Engine) Search(q string, k int) ([]storage.Chunk, error) {
-	v, err := e.client.Embed([]string{"Represent this sentence for searching relevant passages: " + q}, "nomic-embed-text:latest")
+	v, err := e.client.Embed([]string{"Represent this sentence for searching relevant passages: " + q}, e.embedModel)
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +50,7 @@ func (e *Engine) Search(q string, k int) ([]storage.Chunk, error) {
 
 // EXPORTÉ : Restauration de SearchWithVec pour le cache de rag-chat
 func (e *Engine) SearchWithVec(q string, k int) ([]storage.Chunk, []float32, error) {
-	v, err := e.client.Embed([]string{"Represent this sentence for searching relevant passages: " + q}, "nomic-embed-text:latest")
+	v, err := e.client.Embed([]string{"Represent this sentence for searching relevant passages: " + q}, e.embedModel)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -348,4 +352,8 @@ func (e *Engine) AskStreamWithModel(ctx context.Context, q, model string) (<-cha
 	}
 
 	return e.client.GenerateStream(ctx, buildPrompt(ctxStr, q, model, res), model)
+}
+
+func (e *Engine) EmbedModel() string {
+	return e.embedModel
 }
