@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/coder/hnsw"
 	_ "modernc.org/sqlite"
 )
 
@@ -34,7 +35,9 @@ type Store struct {
 	db       *sql.DB
 	vecs     *os.File
 	mu       sync.Mutex
-	vecCache map[string][]float32 // Cache en mémoire : clé = chunk.ID (stable)
+	vecCache map[string][]float32    // Cache RAM : clé = chunk.ID
+	hnswIdx  *hnsw.Graph[string]     // Index ANN : O(log n) au lieu de O(n)
+	hnswPath string                  // Chemin de persistance hnsw.bin
 }
 
 func New(base string) (*Store, error) {
@@ -79,13 +82,16 @@ func New(base string) (*Store, error) {
 		return nil, err
 	}
 
+	hnswPath := filepath.Join(p, "hnsw.bin")
+
 	s := &Store{
 		db:       db,
 		vecs:     vf,
 		vecCache: make(map[string][]float32),
+		hnswPath: hnswPath,
 	}
 
-	// Préchargement de tous les vecteurs en RAM avec clé = chunk.ID (stable)
+	// --- Chargement des vecteurs en RAM ---
 	info, err := vf.Stat()
 	if err == nil && info.Size() > 0 {
 		data := make([]byte, info.Size())
@@ -107,7 +113,62 @@ func New(base string) (*Store, error) {
 		}
 	}
 
+	// --- Chargement ou reconstruction de l'index HNSW ---
+	s.hnswIdx = s.loadOrBuildHNSW(hnswPath)
+
 	return s, nil
+}
+
+// loadOrBuildHNSW charge l'index depuis hnsw.bin si disponible,
+// sinon le reconstruit depuis vecCache (après un rm hnsw.bin ou première indexation).
+func (s *Store) loadOrBuildHNSW(path string) *hnsw.Graph[string] {
+	// Tentative de chargement depuis le fichier persisté
+	if f, err := os.Open(path); err == nil {
+		defer f.Close()
+		g := hnsw.NewGraph[string]()
+		if err := g.Import(f); err == nil {
+			fmt.Printf("✅ Index HNSW chargé (%d vecteurs)\n", len(s.vecCache))
+			return g
+		}
+		fmt.Printf("⚠️  hnsw.bin corrompu — reconstruction depuis vecCache\n")
+	}
+
+	// Reconstruction depuis le cache RAM
+	g := hnsw.NewGraph[string]()
+	if len(s.vecCache) == 0 {
+		return g
+	}
+
+	var nodes []hnsw.Node[string]
+	for id, vec := range s.vecCache {
+		nodes = append(nodes, hnsw.MakeNode(id, vec))
+	}
+	g.Add(nodes...)
+	fmt.Printf("✅ Index HNSW construit (%d vecteurs)\n", len(nodes))
+
+	// Persistance immédiate
+	s.saveHNSW(g, path)
+	return g
+}
+
+// saveHNSW sérialise l'index HNSW sur disque (écriture atomique).
+func (s *Store) saveHNSW(g *hnsw.Graph[string], path string) {
+	tmp := path + ".tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		fmt.Printf("⚠️  saveHNSW create: %v\n", err)
+		return
+	}
+	if err := g.Export(f); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		fmt.Printf("⚠️  saveHNSW encode: %v\n", err)
+		return
+	}
+	f.Close()
+	if err := os.Rename(tmp, path); err != nil {
+		fmt.Printf("⚠️  saveHNSW rename: %v\n", err)
+	}
 }
 
 func (s *Store) Close() {
@@ -116,8 +177,6 @@ func (s *Store) Close() {
 }
 
 func (s *Store) InsertBatch(ids, texts, filenames []string, vecs [][]float32) error {
-	// FIX : le mutex couvre TOUTE la transaction (SQLite + écriture binaire)
-	// pour éviter la race condition sur l'offset vectors.bin
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -125,18 +184,15 @@ func (s *Store) InsertBatch(ids, texts, filenames []string, vecs [][]float32) er
 	if err != nil {
 		return err
 	}
-	// Rollback ne fait rien si Commit a réussi — safe à appeler dans tous les cas
 	defer tx.Rollback()
 
-	// Calcul de l'offset SOUS le mutex — protégé contre les appels concurrents
 	info, err := s.vecs.Stat()
 	if err != nil {
 		return fmt.Errorf("InsertBatch: stat vectors.bin: %w", err)
 	}
 	offset := info.Size()
 
-	// Phase 1 : écriture des vecteurs dans vectors.bin
-	// On écrit AVANT le commit SQL pour détecter les erreurs I/O avant de toucher la DB
+	// Phase 1 : écriture des vecteurs binaires
 	vecOffsets := make([]int64, len(ids))
 	for i := range ids {
 		vecOffsets[i] = offset
@@ -150,7 +206,7 @@ func (s *Store) InsertBatch(ids, texts, filenames []string, vecs [][]float32) er
 		offset += int64(vecBytes)
 	}
 
-	// Phase 2 : insertion SQLite (chunks + FTS) avec les offsets corrects
+	// Phase 2 : insertion SQLite
 	for i := range ids {
 		_, err = tx.Exec("INSERT INTO chunks (id, text, filename, offset) VALUES (?, ?, ?, ?)",
 			ids[i], texts[i], filenames[i], vecOffsets[i])
@@ -176,16 +232,20 @@ func (s *Store) InsertBatch(ids, texts, filenames []string, vecs [][]float32) er
 		}
 	}
 
-	// Phase 3 : commit SQL — si ça échoue, les vecteurs déjà écrits sont orphelins
-	// (vectors.bin est append-only, ils seront ignorés sans entrée SQL correspondante)
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("InsertBatch: commit: %w", err)
 	}
 
-	// Phase 4 : mise à jour du cache RAM APRÈS le commit (cohérence garantie)
+	// Phase 3 : mise à jour cache RAM + index HNSW (après commit SQL)
+	var newNodes []hnsw.Node[string]
 	for i := range ids {
 		s.vecCache[ids[i]] = vecs[i]
+		newNodes = append(newNodes, hnsw.MakeNode(ids[i], vecs[i]))
 	}
+	s.hnswIdx.Add(newNodes...)
+
+	// Persistance de l'index HNSW après chaque batch
+	s.saveHNSW(s.hnswIdx, s.hnswPath)
 
 	return nil
 }
@@ -286,7 +346,6 @@ func rerankChunks(query string, chunks []Chunk) ([]Chunk, error) {
 		return nil, fmt.Errorf("reranker marshal: %w", err)
 	}
 
-	// Timeout 500ms — si le reranker Python est down, on ne bloque pas le pipeline
 	httpClient := &http.Client{Timeout: 500 * time.Millisecond}
 	resp, err := httpClient.Post("http://127.0.0.1:8765", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -294,8 +353,6 @@ func rerankChunks(query string, chunks []Chunk) ([]Chunk, error) {
 	}
 	defer resp.Body.Close()
 
-	// FIX : vérification du status HTTP avant de décoder
-	// Sans ça, un 500 avec body JSON d'erreur corrompt silencieusement le pipeline
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("reranker returned HTTP %d", resp.StatusCode)
 	}
@@ -315,7 +372,78 @@ func rerankChunks(query string, chunks []Chunk) ([]Chunk, error) {
 	return out, nil
 }
 
+// searchVector utilise l'index HNSW pour une recherche ANN en O(log n).
+// Remplace l'ancien full scan O(n) sur tous les chunks.
+// Fallback sur le full scan si l'index est vide (base fraîchement créée).
 func (s *Store) searchVector(queryVec []float32, k int) ([]Chunk, error) {
+	// Fallback full scan si HNSW vide (ex: première indexation en cours)
+	if s.hnswIdx == nil || s.hnswIdx.Len() == 0 {
+		return s.searchVectorFallback(queryVec, k)
+	}
+
+	// Recherche ANN : retourne les k plus proches voisins approximatifs
+	neighbors := s.hnswIdx.Search(queryVec, k)
+
+	if len(neighbors) == 0 {
+		return s.searchVectorFallback(queryVec, k)
+	}
+
+	// Récupération des métadonnées depuis SQLite par IDs
+	if len(neighbors) == 0 {
+		return nil, nil
+	}
+
+	// Construction de la clause IN pour la requête SQL
+	placeholders := make([]string, len(neighbors))
+	args := make([]interface{}, len(neighbors))
+	for i, n := range neighbors {
+		placeholders[i] = "?"
+		args[i] = n.Key
+	}
+
+	query := fmt.Sprintf(
+		"SELECT id, text, filename FROM chunks WHERE id IN (%s)",
+		strings.Join(placeholders, ","),
+	)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	// Map id → chunk pour associer les scores cosine
+	chunkByID := make(map[string]Chunk)
+	for rows.Next() {
+		var c Chunk
+		if err := rows.Scan(&c.ID, &c.Text, &c.Filename); err != nil {
+			continue
+		}
+		chunkByID[c.ID] = c
+	}
+
+	// Calcul du score cosine réel pour chaque voisin HNSW
+	var results []Chunk
+	for _, n := range neighbors {
+		c, ok := chunkByID[n.Key]
+		if !ok {
+			continue
+		}
+		if vec, ok := s.vecCache[c.ID]; ok {
+			c.Score = cosineSimilarity(queryVec, vec)
+		}
+		results = append(results, c)
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
+
+	return results, nil
+}
+
+// searchVectorFallback : full scan O(n) — utilisé uniquement si HNSW indisponible.
+func (s *Store) searchVectorFallback(queryVec []float32, k int) ([]Chunk, error) {
 	rows, err := s.db.Query("SELECT id, text, filename, offset FROM chunks")
 	if err != nil {
 		return nil, err
@@ -332,7 +460,6 @@ func (s *Store) searchVector(queryVec []float32, k int) ([]Chunk, error) {
 
 		vec, ok := s.vecCache[c.ID]
 		if !ok {
-			// Fallback disque (ne devrait pas arriver en prod)
 			buf := make([]byte, vecBytes)
 			s.vecs.ReadAt(buf, offset)
 			vec = make([]float32, vecDim)
@@ -369,7 +496,6 @@ func (s *Store) fullTextSearch(query string, k int) ([]Chunk, error) {
 		"moins": true, "bien": true, "tout": true, "cette": true,
 		"sont": true, "mais": true, "donc": true, "aussi": true,
 		"même": true, "leur": true, "quoi": true, "être": true,
-		// Ajouts manquants
 		"est": true, "les": true, "des": true, "une": true,
 		"qui": true, "que": true, "sur": true, "par": true,
 		"aux": true, "the": true, "and": true, "for": true,
