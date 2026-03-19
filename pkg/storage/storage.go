@@ -90,7 +90,6 @@ func New(base string) (*Store, error) {
 	if err == nil && info.Size() > 0 {
 		data := make([]byte, info.Size())
 		vf.ReadAt(data, 0)
-		// Charge les IDs et offsets depuis SQLite pour mapper offset → ID
 		rows, rerr := db.Query("SELECT id, offset FROM chunks ORDER BY offset")
 		if rerr == nil {
 			defer rows.Close()
@@ -117,6 +116,8 @@ func (s *Store) Close() {
 }
 
 func (s *Store) InsertBatch(ids, texts, filenames []string, vecs [][]float32) error {
+	// FIX : le mutex couvre TOUTE la transaction (SQLite + écriture binaire)
+	// pour éviter la race condition sur l'offset vectors.bin
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -124,55 +125,73 @@ func (s *Store) InsertBatch(ids, texts, filenames []string, vecs [][]float32) er
 	if err != nil {
 		return err
 	}
+	// Rollback ne fait rien si Commit a réussi — safe à appeler dans tous les cas
 	defer tx.Rollback()
 
-	info, _ := s.vecs.Stat()
+	// Calcul de l'offset SOUS le mutex — protégé contre les appels concurrents
+	info, err := s.vecs.Stat()
+	if err != nil {
+		return fmt.Errorf("InsertBatch: stat vectors.bin: %w", err)
+	}
 	offset := info.Size()
 
+	// Phase 1 : écriture des vecteurs dans vectors.bin
+	// On écrit AVANT le commit SQL pour détecter les erreurs I/O avant de toucher la DB
+	vecOffsets := make([]int64, len(ids))
 	for i := range ids {
-		_, err = tx.Exec("INSERT INTO chunks (id, text, filename, offset) VALUES (?, ?, ?, ?)",
-			ids[i], texts[i], filenames[i], offset)
-		if err != nil {
-			return err
-		}
-
+		vecOffsets[i] = offset
 		buf := make([]byte, vecBytes)
 		for j, f := range vecs[i] {
 			binary.LittleEndian.PutUint32(buf[j*4:], math.Float32bits(f))
 		}
 		if _, err := s.vecs.WriteAt(buf, offset); err != nil {
-			return err
+			return fmt.Errorf("InsertBatch: write vec[%d]: %w", i, err)
 		}
-		
-		// Met à jour le cache en RAM avec clé = chunk.ID
-		s.vecCache[ids[i]] = vecs[i]
-		
 		offset += int64(vecBytes)
 	}
 
-	// Insert FTS incrémental : évite le rebuild complet à chaque batch
-	// Le rebuild sur 2124 chunks à chaque batch de 30 = 70x plus de travail que nécessaire
+	// Phase 2 : insertion SQLite (chunks + FTS) avec les offsets corrects
+	for i := range ids {
+		_, err = tx.Exec("INSERT INTO chunks (id, text, filename, offset) VALUES (?, ?, ?, ?)",
+			ids[i], texts[i], filenames[i], vecOffsets[i])
+		if err != nil {
+			return fmt.Errorf("InsertBatch: insert chunk[%d]: %w", i, err)
+		}
+	}
+
 	stmt, err := tx.Prepare("INSERT INTO fts_chunks(rowid, text) VALUES(?, ?)")
 	if err != nil {
-		return err
+		return fmt.Errorf("InsertBatch: prepare FTS: %w", err)
 	}
 	defer stmt.Close()
+
 	for i := range ids {
 		var rowid int64
 		err = tx.QueryRow("SELECT rowid FROM chunks WHERE id = ?", ids[i]).Scan(&rowid)
 		if err != nil {
-			return err
+			return fmt.Errorf("InsertBatch: get rowid[%d]: %w", i, err)
 		}
 		if _, err = stmt.Exec(rowid, texts[i]); err != nil {
-			return err
+			return fmt.Errorf("InsertBatch: insert FTS[%d]: %w", i, err)
 		}
 	}
 
-	return tx.Commit()
+	// Phase 3 : commit SQL — si ça échoue, les vecteurs déjà écrits sont orphelins
+	// (vectors.bin est append-only, ils seront ignorés sans entrée SQL correspondante)
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("InsertBatch: commit: %w", err)
+	}
+
+	// Phase 4 : mise à jour du cache RAM APRÈS le commit (cohérence garantie)
+	for i := range ids {
+		s.vecCache[ids[i]] = vecs[i]
+	}
+
+	return nil
 }
 
 func (s *Store) SearchSmart(query string, queryVec []float32, k int) ([]Chunk, error) {
-	fetchSize := k * 5 // Réduit de k*10 : le re-ranker compense la perte de recall
+	fetchSize := k * 5
 
 	vecHits, _ := s.searchVector(queryVec, fetchSize)
 	keywordHits, _ := s.fullTextSearch(query, fetchSize)
@@ -211,9 +230,7 @@ func (s *Store) SearchSmart(query string, queryVec []float32, k int) ([]Chunk, e
 		return candidates[i].Score > candidates[j].Score
 	})
 
-
-
-	rerankPool := 6 // Réduit de 10 : ~40% moins de latence re-ranker
+	rerankPool := 6
 	if len(candidates) < rerankPool {
 		rerankPool = len(candidates)
 	}
@@ -268,17 +285,24 @@ func rerankChunks(query string, chunks []Chunk) ([]Chunk, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reranker marshal: %w", err)
 	}
+
 	// Timeout 500ms — si le reranker Python est down, on ne bloque pas le pipeline
 	httpClient := &http.Client{Timeout: 500 * time.Millisecond}
 	resp, err := httpClient.Post("http://127.0.0.1:8765", "application/json", bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reranker unreachable: %w", err)
 	}
 	defer resp.Body.Close()
 
+	// FIX : vérification du status HTTP avant de décoder
+	// Sans ça, un 500 avec body JSON d'erreur corrompt silencieusement le pipeline
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("reranker returned HTTP %d", resp.StatusCode)
+	}
+
 	var result []rerankChunk
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reranker decode: %w", err)
 	}
 
 	var out []Chunk
@@ -306,17 +330,16 @@ func (s *Store) searchVector(queryVec []float32, k int) ([]Chunk, error) {
 			continue
 		}
 
-		// Lecture depuis le cache RAM (clé = chunk.ID, stable même si vectors.bin est réécrit)
 		vec, ok := s.vecCache[c.ID]
 		if !ok {
-			// Fallback disque si absent du cache (ne devrait pas arriver en prod)
+			// Fallback disque (ne devrait pas arriver en prod)
 			buf := make([]byte, vecBytes)
 			s.vecs.ReadAt(buf, offset)
 			vec = make([]float32, vecDim)
 			for i := 0; i < vecDim; i++ {
 				vec[i] = math.Float32frombits(binary.LittleEndian.Uint32(buf[i*4:]))
 			}
-			s.vecCache[c.ID] = vec // Met en cache pour les prochaines requêtes
+			s.vecCache[c.ID] = vec
 		}
 
 		c.Score = cosineSimilarity(queryVec, vec)
@@ -346,6 +369,10 @@ func (s *Store) fullTextSearch(query string, k int) ([]Chunk, error) {
 		"moins": true, "bien": true, "tout": true, "cette": true,
 		"sont": true, "mais": true, "donc": true, "aussi": true,
 		"même": true, "leur": true, "quoi": true, "être": true,
+		// Ajouts manquants
+		"est": true, "les": true, "des": true, "une": true,
+		"qui": true, "que": true, "sur": true, "par": true,
+		"aux": true, "the": true, "and": true, "for": true,
 	}
 
 	var techWords []string
@@ -375,7 +402,7 @@ func (s *Store) fullTextSearch(query string, k int) ([]Chunk, error) {
 				hasDigit = true
 			}
 		}
-		
+
 		if (hasUpper && len([]rune(clean)) >= 3) || hasDigit {
 			techWords = append(techWords, clean+"*")
 		}
@@ -418,17 +445,14 @@ func (s *Store) executeFTS(ftsQuery string, k int) ([]Chunk, error) {
 		var c Chunk
 		var rank float32
 		if err := rows.Scan(&c.ID, &c.Text, &c.Filename, &rank); err == nil {
-			// FTS5 retourne rank négatif (plus négatif = meilleur)
-			// On normalise en score positif pour le RRF
 			if rank < 0 {
 				c.Score = 1.0 / (1.0 + float32(math.Abs(float64(rank))))
 			} else {
-				c.Score = 0.1 // rank=0 = match faible
+				c.Score = 0.1
 			}
 			results = append(results, c)
 		}
 	}
-	// Trie par score BM25 décroissant
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Score > results[j].Score
 	})

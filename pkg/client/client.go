@@ -2,6 +2,7 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -63,14 +64,32 @@ func (c *Client) Generate(prompt, model string) (string, error) {
 	return result.Response, nil
 }
 
-func (c *Client) GenerateStream(prompt, model string) (<-chan string, error) {
+// GenerateStream lance le streaming de tokens depuis Ollama.
+//
+// FIX goroutine leak : on accepte un context.Context.
+// Si le client HTTP coupe la connexion (browser fermé, timeout), le ctx est annulé
+// côté appelant (via r.Context() dans handleChatStream), ce qui provoque la sortie
+// de la goroutine interne via le select sur <-ctx.Done().
+//
+// Sans ça : la goroutine continue de bloquer sur out <- token indéfiniment
+// une fois le buffer de 100 saturé → leak mémoire progressif sous charge.
+func (c *Client) GenerateStream(ctx context.Context, prompt, model string) (<-chan string, error) {
 	req := map[string]interface{}{"model": model, "prompt": prompt, "stream": true}
 	data, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("stream marshal: %w", err)
 	}
 
-	resp, err := c.HTTP.Post(c.BaseURL+"/api/generate", "application/json", bytes.NewBuffer(data))
+	// On passe le context à la requête HTTP pour annuler la connexion Ollama
+	// dès que le client web se déconnecte
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.BaseURL+"/api/generate", bytes.NewBuffer(data))
+	if err != nil {
+		return nil, fmt.Errorf("stream new request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.HTTP.Do(httpReq)
 	if err != nil {
 		return nil, err
 	}
@@ -80,15 +99,26 @@ func (c *Client) GenerateStream(prompt, model string) (<-chan string, error) {
 	go func() {
 		defer close(out)
 		defer resp.Body.Close()
-		// Récupère les panics dans la goroutine de streaming
 		defer func() {
 			if r := recover(); r != nil {
-				out <- fmt.Sprintf("[ERREUR STREAMING: %v]", r)
+				// Envoie l'erreur seulement si le context n'est pas annulé
+				// (sinon le channel est peut-être déjà consommé/fermé)
+				select {
+				case out <- fmt.Sprintf("[ERREUR STREAMING: %v]", r):
+				case <-ctx.Done():
+				}
 			}
 		}()
 
 		decoder := json.NewDecoder(resp.Body)
 		for {
+			// Vérifie l'annulation AVANT de bloquer sur Decode
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
 			var streamResp struct {
 				Response string `json:"response"`
 				Done     bool   `json:"done"`
@@ -99,7 +129,13 @@ func (c *Client) GenerateStream(prompt, model string) (<-chan string, error) {
 			}
 
 			if streamResp.Response != "" {
-				out <- streamResp.Response
+				// Envoi avec fallback sur annulation — évite le blocage si le
+				// canal est plein ET que le contexte est annulé simultanément
+				select {
+				case out <- streamResp.Response:
+				case <-ctx.Done():
+					return
+				}
 			}
 
 			if streamResp.Done {

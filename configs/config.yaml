@@ -1,4 +1,6 @@
 ollama:
+  # Supporte la variable d'environnement OLLAMA_HOST pour override sans modifier ce fichier
+  # Ex : OLLAMA_HOST=192.168.1.50 ./rag-web
   host: "100.101.108.111"
   port: 11434
 
@@ -13,3 +15,10 @@ rag:
   db_path: "~/.rag-hybrid"
   embed_model: "nomic-embed-text:latest"
   default_model: "mistral:7b-instruct"
+  # Nombre de chunks envoyés au reranker CrossEncoder (tunable sans recompilation)
+  # Plus c'est élevé = meilleur recall mais +latence reranker
+  # Recommandé : 6-10 selon perf de ta machine
+  rerank_pool: 6
+  # Seuil de score minimum pour inclure un chunk dans le contexte LLM (0.0 → 1.0)
+  # 0.0 = tout passe (comportement actuel), 0.3 = filtre les chunks faibles
+  min_score: 0.30

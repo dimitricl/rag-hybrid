@@ -23,9 +23,11 @@ type WebConfig struct {
 }
 
 type RAGConfig struct {
-	DBPath     string `yaml:"db_path"`
-	EmbedModel string `yaml:"embed_model"`
-	DefaultModel string `yaml:"default_model"`
+	DBPath       string  `yaml:"db_path"`
+	EmbedModel   string  `yaml:"embed_model"`
+	DefaultModel string  `yaml:"default_model"`
+	RerankPool   int     `yaml:"rerank_pool"` // Nombre de chunks envoyés au reranker
+	MinScore     float32 `yaml:"min_score"`   // Seuil de score pour inclusion dans le contexte
 }
 
 type Config struct {
@@ -45,6 +47,8 @@ func defaults() Config {
 			DBPath:       "~/.rag-hybrid",
 			EmbedModel:   "nomic-embed-text:latest",
 			DefaultModel: "mistral:7b-instruct",
+			RerankPool:   6,
+			MinScore:     0.30,
 		},
 	}
 }
@@ -52,6 +56,10 @@ func defaults() Config {
 // Load charge la config depuis configs/config.yaml relatif au binaire,
 // ou depuis ~/.rag-hybrid/config.yaml en fallback.
 // Si aucun fichier trouvé, retourne les valeurs par défaut sans erreur.
+//
+// Override par variable d'environnement (priorité sur le fichier) :
+//   OLLAMA_HOST  → ollama.host
+//   OLLAMA_PORT  → ollama.port  (parsé en int, ignoré si invalide)
 func Load() Config {
 	cfg := defaults()
 
@@ -70,15 +78,32 @@ func Load() Config {
 			return defaults()
 		}
 		// Complète les champs vides avec les defaults
-		if cfg.Ollama.Host == "" { cfg.Ollama.Host = defaults().Ollama.Host }
-		if cfg.Ollama.Port == 0  { cfg.Ollama.Port = defaults().Ollama.Port }
-		if cfg.Reranker.Host == "" { cfg.Reranker.Host = defaults().Reranker.Host }
-		if cfg.Reranker.Port == 0  { cfg.Reranker.Port = defaults().Reranker.Port }
-		if cfg.Web.Port == 0 { cfg.Web.Port = defaults().Web.Port }
-		if cfg.RAG.DBPath == "" { cfg.RAG.DBPath = defaults().RAG.DBPath }
+		if cfg.Ollama.Host == ""    { cfg.Ollama.Host = defaults().Ollama.Host }
+		if cfg.Ollama.Port == 0     { cfg.Ollama.Port = defaults().Ollama.Port }
+		if cfg.Reranker.Host == ""  { cfg.Reranker.Host = defaults().Reranker.Host }
+		if cfg.Reranker.Port == 0   { cfg.Reranker.Port = defaults().Reranker.Port }
+		if cfg.Web.Port == 0        { cfg.Web.Port = defaults().Web.Port }
+		if cfg.RAG.DBPath == ""     { cfg.RAG.DBPath = defaults().RAG.DBPath }
 		if cfg.RAG.EmbedModel == "" { cfg.RAG.EmbedModel = defaults().RAG.EmbedModel }
 		if cfg.RAG.DefaultModel == "" { cfg.RAG.DefaultModel = defaults().RAG.DefaultModel }
-		return cfg
+		if cfg.RAG.RerankPool == 0  { cfg.RAG.RerankPool = defaults().RAG.RerankPool }
+		// MinScore à 0 est une valeur intentionnellement valide (tout passe),
+		// on applique le défaut seulement si négatif (valeur aberrante)
+		if cfg.RAG.MinScore < 0     { cfg.RAG.MinScore = defaults().RAG.MinScore }
+		break
+	}
+
+	// FIX : override par variable d'environnement
+	// Permet de changer l'IP Ollama sans toucher au fichier config
+	// Ex : OLLAMA_HOST=192.168.1.50 ./rag-web
+	if h := os.Getenv("OLLAMA_HOST"); h != "" {
+		cfg.Ollama.Host = h
+	}
+	if p := os.Getenv("OLLAMA_PORT"); p != "" {
+		var port int
+		if _, err := fmt.Sscanf(p, "%d", &port); err == nil && port > 0 {
+			cfg.Ollama.Port = port
+		}
 	}
 
 	return cfg

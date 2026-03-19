@@ -1,6 +1,7 @@
 package search
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -8,12 +9,13 @@ import (
 	"rag-hybrid/pkg/storage"
 )
 
-const minDisplayScore = -999.0 // Désactivé : le re-ranker cross-encoder gère le tri
+const minDisplayScore = -999.0
 
+// EXPORTÉ : Utilisé par main.go pour l'affichage
 type QuestionType int
 
 const (
-	QtRegister    QuestionType = iota
+	QtRegister QuestionType = iota
 	QtCode
 	QtConcept
 	QtCalculation
@@ -29,8 +31,12 @@ func New(c *client.Client, s *storage.Store) *Engine {
 	return &Engine{client: c, store: s}
 }
 
+// EXPORTÉ : Permet à main.go d'accéder à la DB
+func (e *Engine) Store() *storage.Store {
+	return e.store
+}
+
 func (e *Engine) Search(q string, k int) ([]storage.Chunk, error) {
-	// mxbai-embed-large requiert un préfixe sur les queries (pas sur les documents)
 	v, err := e.client.Embed([]string{"Represent this sentence for searching relevant passages: " + q}, "nomic-embed-text:latest")
 	if err != nil {
 		return nil, err
@@ -38,26 +44,38 @@ func (e *Engine) Search(q string, k int) ([]storage.Chunk, error) {
 	return e.store.SearchSmart(q, v[0], k)
 }
 
-// SearchWithVec retourne les chunks ET le vecteur calculé.
-// Utilisé par rag-chat pour mettre le vecteur en cache et éviter
-// le re-calcul réseau sur les questions répétées.
+// EXPORTÉ : Restauration de SearchWithVec pour le cache de rag-chat
 func (e *Engine) SearchWithVec(q string, k int) ([]storage.Chunk, []float32, error) {
 	v, err := e.client.Embed([]string{"Represent this sentence for searching relevant passages: " + q}, "nomic-embed-text:latest")
 	if err != nil {
 		return nil, nil, err
 	}
-	chunks, err := e.store.SearchSmart(q, v[0], k)
-	return chunks, v[0], err
+	res, err := e.store.SearchSmart(q, v[0], k)
+	return res, v[0], err
 }
 
-// Store expose le store pour les recherches avec vecteur pré-calculé (cache).
-func (e *Engine) Store() *storage.Store {
-	return e.store
+// EXPORTÉ : Restauration de IsLargeModel pour rag-web
+func IsLargeModel(model string) bool {
+	largeModels := []string{"deepseek", "16b", "70b", "34b", "llama3"}
+	lower := strings.ToLower(model)
+	for _, m := range largeModels {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
 }
 
+// EXPORTÉ : ClassifyQuestion en majuscule pour rag-web
+//
+// FIX ordre des checks : QtRegister AVANT QtCode
+// Avant ce fix, "comment lire l'ADCSRA" matchait "lire" → QtCode
+// au lieu de "ADCSRA" → QtRegister, car codeKW était évalué en premier.
+// Règle : plus le type est précis/technique, plus il est évalué tôt.
 func ClassifyQuestion(q string) QuestionType {
 	lower := strings.ToLower(q)
 
+	// 1. Registres — le plus spécifique, priorité absolue
 	registerKW := []string{
 		"registre", "register", "adcsra", "admux", "adcsrb", "tccr", "timsk",
 		"portb", "ddrd", "sreg", "spcr", "ucsr", "bit", "flag", "offset",
@@ -69,18 +87,7 @@ func ClassifyQuestion(q string) QuestionType {
 		}
 	}
 
-	codeKW := []string{
-		"code", "programme", "fonction", "arduino", "c++", "python",
-		"loop", "setup", "void", "int ", "return", "for ", "while",
-		"exemple", "syntaxe", "implémenter", "écrire", "gpio", "configurer",
-		"utiliser", "piloter", "lire",
-	}
-	for _, kw := range codeKW {
-		if strings.Contains(lower, kw) {
-			return QtCode
-		}
-	}
-
+	// 2. Calcul — avant code pour éviter "calculer une fréquence en C"
 	calcKW := []string{
 		"calcul", "calculer", "formule", "valeur", "fréquence", "tension",
 		"résistance", "courant", "ohm", "volt", "hz", "mhz", "prescaler",
@@ -92,6 +99,7 @@ func ClassifyQuestion(q string) QuestionType {
 		}
 	}
 
+	// 3. Concept — avant code pour "expliquer comment fonctionne le SPI"
 	conceptKW := []string{
 		"comment fonctionne", "qu'est-ce", "expliquer", "définir",
 		"principe", "différence entre", "pourquoi", "quand utiliser",
@@ -102,11 +110,24 @@ func ClassifyQuestion(q string) QuestionType {
 		}
 	}
 
+	// 4. Code — en dernier parmi les types spécialisés
+	// "utiliser" retiré : trop générique, causait des faux positifs sur des questions registre/concept
+	codeKW := []string{
+		"code", "programme", "fonction", "arduino", "c++", "python",
+		"loop", "setup", "void", "int ", "return", "for ", "while",
+		"exemple", "syntaxe", "implémenter", "écrire", "gpio", "configurer",
+		"piloter", "lire",
+	}
+	for _, kw := range codeKW {
+		if strings.Contains(lower, kw) {
+			return QtCode
+		}
+	}
+
 	return QtGeneral
 }
 
-// DetectPlatform analyse les chunks pour identifier la plateforme matérielle dominante.
-func DetectPlatform(chunks []storage.Chunk) string {
+func detectPlatform(chunks []storage.Chunk) string {
 	counts := map[string]int{"atmega": 0, "stm32": 0, "esp32": 0, "arduino": 0}
 	keywords := map[string][]string{
 		"atmega":  {"ATmega", "ATmega328", "avr/io", "DDRB", "DDRD", "PORTB", "PORTD", "PINB", "PIND", "TCCR", "ADCSRA", "ADMUX", "avr/interrupt"},
@@ -141,89 +162,72 @@ func DetectPlatform(chunks []storage.Chunk) string {
 	}
 
 	labels := map[string]string{
-		"atmega":  "ATmega328/AVR — utilise UNIQUEMENT les registres AVR (DDRx, PORTx, PINx, avr/io.h).",
+		"atmega":  "ATmega328/AVR — utilise UNIQUEMENT les registres AVR.",
 		"stm32":   "STM32/HAL — utilise UNIQUEMENT l'API HAL STM32.",
 		"esp32":   "ESP32 — utilise UNIQUEMENT l'API ESP-IDF ou Arduino-ESP32.",
 		"arduino": "Arduino — utilise UNIQUEMENT les fonctions Arduino.",
 	}
 
-	secondCount := 0
-	second := ""
-	for p, c := range counts {
-		if p != best && c > secondCount {
-			secondCount = c
-			second = p
-		}
-	}
-
-	if secondCount > 0 && secondCount >= bestCount/2 && second != "" {
-		return fmt.Sprintf("ATTENTION document mixte (%s ET %s détectés). Utilise PRIORITAIREMENT : %s", best, second, labels[best])
-	}
-
 	return labels[best]
 }
 
+func CheckCoherence(q string, chunks []storage.Chunk) bool {
+	conceptGroups := [][]string{
+		{"adc", "adcsra", "admux", "analogique", "numérique", "convertisseur"},
+		{"infrarouge", "infrared", "ir ", "rc5", "nec", "télécommande"},
+		{"uart", "série", "serial", "usart", "rx", "tx", "baud"},
+		{"timer", "pwm", "tccr", "ocr", "compteur", "rapport cyclique"},
+		{"gpio", "ddrb", "portb", "pinb", "entrée", "sortie"},
+		{"spi", "i2c", "twi", "scl", "sda", "mosi", "miso"},
+		{"réseau", "ethernet", "tcp", "udp", "ip", "wifi", "zigbee", "lora", "802.1x", "vlan", "switch"},
+		{"ddos", "attaque", "slowloris", "exploit", "vulnérabilité", "fail2ban", "iptables"},
+	}
 
-// IsLargeModel retourne true pour les modèles capables de suivre des instructions complexes.
-func IsLargeModel(model string) bool {
-	largeModels := []string{"deepseek", "16b", "70b", "34b", "llama3", "gemma2", "qwen2.5:7b", "qwen2.5-coder:7b"}
-	lower := strings.ToLower(model)
-	for _, m := range largeModels {
-		if strings.Contains(lower, m) {
-			return true
+	qLower := strings.ToLower(q)
+	var foundGroups []int
+
+	for i, group := range conceptGroups {
+		for _, word := range group {
+			if strings.Contains(qLower, word) {
+				foundGroups = append(foundGroups, i)
+				break
+			}
 		}
 	}
-	return false
-}
 
-// extractKeywords extrait les mots techniques d'une question (>3 chars, hors stop-words).
-func extractKeywords(q string) []string {
-	stop := map[string]bool{
-		"comment": true, "quels": true, "quelle": true, "sont": true,
-		"pour": true, "avec": true, "dans": true, "sur": true,
-		"les": true, "des": true, "que": true, "qui": true,
-		"le": true, "la": true, "de": true, "du": true, "en": true,
-		"bits": true, "bit": true, "fonctionne": true, "utiliser": true,
-		"faire": true, "vers": true, "une": true, "est": true,
-	}
-	var kws []string
-	for _, w := range strings.Fields(strings.ToLower(q)) {
-		w = strings.Trim(w, "?.,;:!()")
-		if len([]rune(w)) > 3 && !stop[w] {
-			kws = append(kws, w)
-		}
-	}
-	return kws
-}
-
-// chunkRelevant vérifie qu'un chunk contient au moins 1 mot-clé de la question.
-// Filtre post-rerank : évite qu'un fichier hors-sujet remonte malgré un bon score cross-encoder.
-func chunkRelevant(chunk storage.Chunk, keywords []string) bool {
-	if len(keywords) == 0 {
+	if len(foundGroups) <= 1 {
 		return true
 	}
-	text := strings.ToLower(chunk.Text + " " + chunk.Filename)
-	for _, kw := range keywords {
-		if strings.Contains(text, kw) {
+
+	for _, chunk := range chunks {
+		chunkLower := strings.ToLower(chunk.Text)
+		matchCount := 0
+		for _, groupIdx := range foundGroups {
+			groupFound := false
+			for _, word := range conceptGroups[groupIdx] {
+				if strings.Contains(chunkLower, word) {
+					groupFound = true
+					break
+				}
+			}
+			if groupFound {
+				matchCount++
+			}
+		}
+		if matchCount == len(foundGroups) {
 			return true
 		}
 	}
 	return false
 }
 
+// EXPORTÉ : Signature corrigée pour renvoyer (string, []storage.Chunk, int, float32)
 func BuildContext(results []storage.Chunk, q string) (string, []storage.Chunk, int, float32) {
-	keywords := extractKeywords(q)
 	var ctx strings.Builder
-	var filtered []storage.Chunk
 	included := 0
 	var maxCosine float32
 
-	var bestRRF float32
-	for _, r := range results {
-		if r.RRFRaw > bestRRF {
-			bestRRF = r.RRFRaw
-		}
-	}
+	var filteredChunks []storage.Chunk
 
 	seenFiles := make(map[string]bool)
 	sourceNum := 1
@@ -231,106 +235,40 @@ func BuildContext(results []storage.Chunk, q string) (string, []storage.Chunk, i
 		if r.Score < minDisplayScore {
 			continue
 		}
-		// Filtre post-rerank : exclut les chunks sans aucun mot-clé de la question
-		if !chunkRelevant(r, keywords) {
-			continue
-		}
 		if r.RRFRaw > maxCosine {
 			maxCosine = r.RRFRaw
 		}
 		ctx.WriteString(fmt.Sprintf(
-			"=== SOURCE %d : %s ===\n%s\n\n",
+			"<source id=\"%d\" filename=\"%s\">\n%s\n</source>\n\n",
 			sourceNum, r.Filename, r.Text,
 		))
-		filtered = append(filtered, r)
+
 		seenFiles[r.Filename] = true
+		filteredChunks = append(filteredChunks, r)
+
 		sourceNum++
 		included++
 	}
-	return ctx.String(), filtered, len(seenFiles), maxCosine
-}
-
-
-// CheckCoherence vérifie que les sources couvrent réellement la question.
-// Stratégie : détecte les paires de concepts clés dans la question.
-// Si la question associe deux domaines distincts (ex: ADC + IR), vérifie
-// qu'au moins un chunk les contient ENSEMBLE. Sinon → non documenté.
-func CheckCoherence(q string, chunks []storage.Chunk) bool {
-	if len(chunks) == 0 {
-		return false
-	}
-
-	// Groupes de concepts techniques — si deux groupes distincts sont détectés
-	// dans la question, ils doivent co-exister dans au moins un chunk.
-	conceptGroups := [][]string{
-		{"adc", "adcsra", "admux", "analogique", "numérique", "convertisseur"},
-		{"infrarouge", "infrared", "ir ", "rc5", "nec", "télécommande"},
-		{"uart", "série", "serial", "usart", "rx", "tx", "baud"},
-		{"timer", "pwm", "tccr", "ocr", "compteur"},
-		{"gpio", "ddrb", "portb", "pinb", "entrée", "sortie"},
-		{"spi", "i2c", "twi", "scl", "sda", "mosi", "miso"},
-		{"réseau", "ethernet", "tcp", "udp", "ip", "wifi", "zigbee", "lora"},
-		{"ddos", "attaque", "slowloris", "exploit", "vulnérabilité"},
-	}
-
-	qLower := strings.ToLower(q)
-
-	// Détecte quels groupes sont mentionnés dans la question
-	var activeGroups []int
-	for i, group := range conceptGroups {
-		for _, kw := range group {
-			if strings.Contains(qLower, kw) {
-				activeGroups = append(activeGroups, i)
-				break
-			}
-		}
-	}
-
-	// Si la question ne touche qu'un seul groupe (ou aucun) → pas de vérification croisée
-	if len(activeGroups) < 2 {
-		return true
-	}
-
-	// Vérifie qu'au moins un chunk contient des mots des DEUX groupes actifs
-	for _, chunk := range chunks {
-		text := strings.ToLower(chunk.Text)
-		allPresent := true
-		for _, gIdx := range activeGroups {
-			found := false
-			for _, kw := range conceptGroups[gIdx] {
-				if strings.Contains(text, kw) {
-					found = true
-					break
-				}
-			}
-			if !found {
-				allPresent = false
-				break
-			}
-		}
-		if allPresent {
-			return true
-		}
-	}
-
-	// Aucun chunk ne couvre tous les groupes → question hors domaine
-	return false
+	return ctx.String(), filteredChunks, len(seenFiles), maxCosine
 }
 
 func buildPrompt(ctxStr, q, model string, chunks []storage.Chunk) string {
 	qt := ClassifyQuestion(q)
-	platformHint := DetectPlatform(chunks)
+	platformHint := detectPlatform(chunks)
 
 	platformLine := ""
 	if platformHint != "" {
 		platformLine = "\nCONTRAINTE DE PLATEFORME : " + platformHint
 	}
 
-	// LE BOUCLIER ANTI-HALLUCINATION UNIVERSEL (Appliqué à TOUTES les questions)
 	systemPrompt := `Tu es un robot d'extraction strict pour BTS CIEL. Tu n'es PAS un professeur.
 RÈGLE ABSOLUE 1 : Tu lis les sources fournies.
 RÈGLE ABSOLUE 2 : Si la question associe des concepts qui ne sont pas explicitement liés dans les sources pour accomplir la tâche, tu DOIS répondre EXACTEMENT et UNIQUEMENT : "Désolé, cette opération n'est pas décrite dans le cours."
-RÈGLE ABSOLUE 3 : AUCUNE connaissance externe. AUCUNE déduction. AUCUNE adaptation de méthodologie.`
+RÈGLE ABSOLUE 3 : AUCUNE connaissance externe. AUCUNE déduction. AUCUNE adaptation de méthodologie.
+
+EXEMPLE DE COMPORTEMENT ATTENDU :
+Question: Comment utiliser le port USB pour mesurer la vitesse du vent ?
+Ta Réponse: Désolé, cette opération n'est pas décrite dans le cours.`
 
 	var specificPrompt string
 
@@ -373,16 +311,16 @@ func (e *Engine) AskWithModel(q, model string) (string, error) {
 		return "Aucune source suffisamment pertinente trouvée. Essaie de reformuler.", nil
 	}
 	if !CheckCoherence(q, res) {
-		return "Cette combinaison de concepts n'est pas documentée dans les sources indexées.", nil
+		return "Désolé, cette opération n'est pas décrite dans le cours.", nil
 	}
 	return e.client.Generate(buildPrompt(ctxStr, q, model, res), model)
 }
 
 func (e *Engine) AskStream(q string) (<-chan string, error) {
-	return e.AskStreamWithModel(q, "mistral:7b-instruct")
+	return e.AskStreamWithModel(context.Background(), q, "mistral:7b-instruct")
 }
 
-func (e *Engine) AskStreamWithModel(q, model string) (<-chan string, error) {
+func (e *Engine) AskStreamWithModel(ctx context.Context, q, model string) (<-chan string, error) {
 	res, err := e.Search(q, 3)
 	if err != nil {
 		return nil, err
@@ -394,11 +332,13 @@ func (e *Engine) AskStreamWithModel(q, model string) (<-chan string, error) {
 		close(out)
 		return out, nil
 	}
+
 	if !CheckCoherence(q, res) {
 		out := make(chan string, 1)
-		out <- "Cette combinaison de concepts n'est pas documentée dans les sources indexées."
+		out <- "Désolé, cette opération n'est pas décrite dans le cours."
 		close(out)
 		return out, nil
 	}
-	return e.client.GenerateStream(buildPrompt(ctxStr, q, model, res), model)
+
+	return e.client.GenerateStream(ctx, buildPrompt(ctxStr, q, model, res), model)
 }
