@@ -41,7 +41,7 @@ func (e *Engine) Store() *storage.Store {
 }
 
 func (e *Engine) Search(q string, k int) ([]storage.Chunk, error) {
-	v, err := e.client.Embed([]string{"query: " + q}, e.embedModel)
+	v, err := e.client.Embed([]string{"Represent this sentence for searching relevant passages: " + q}, e.embedModel)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +50,7 @@ func (e *Engine) Search(q string, k int) ([]storage.Chunk, error) {
 
 // EXPORTÉ : Restauration de SearchWithVec pour le cache de rag-chat
 func (e *Engine) SearchWithVec(q string, k int) ([]storage.Chunk, []float32, error) {
-	v, err := e.client.Embed([]string{"query: " + q}, e.embedModel)
+	v, err := e.client.Embed([]string{"Represent this sentence for searching relevant passages: " + q}, e.embedModel)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -11,7 +11,7 @@ web:
 
 rag:
   db_path: "~/.rag-hybrid"
-  embed_model: "bge-m3:latest"
+  embed_model: "nomic-embed-text:latest"
   default_model: "qwen2.5:7b"
   rerank_pool: 6
   min_score: 0.30

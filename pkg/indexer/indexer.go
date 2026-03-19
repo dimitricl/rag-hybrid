@@ -1,7 +1,6 @@
 package indexer
 
 import (
-	"strings"
 	"fmt"
 	"sync"
 
@@ -87,14 +86,7 @@ func (idx *Indexer) Index(dir string) error {
 
 			texts := make([]string, len(chunks))
 			for j, c := range chunks {
-				// bge-m3 : prefix "passage: " pour les documents indexés
-				// (asymétrique avec "query: " côté recherche)
-				// Pour nomic/mxbai : pas de prefix nécessaire
-				if strings.Contains(idx.EmbedModel, "bge") {
-					texts[j] = "passage: " + c.Text
-				} else {
 					texts[j] = c.Text
-				}
 			}
 			vecs, err := idx.client.Embed(texts, idx.EmbedModel)
 			if err != nil {
