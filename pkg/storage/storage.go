@@ -254,7 +254,7 @@ func (s *Store) InsertBatch(ids, texts, filenames []string, vecs [][]float32) er
 }
 
 func (s *Store) SearchSmart(query string, queryVec []float32, k int) ([]Chunk, error) {
-	fetchSize := k * 5
+	fetchSize := k * 10 // Augmenté de 5→10 pour plus de recall
 
 	vecHits, _ := s.searchVector(queryVec, fetchSize)
 	keywordHits, _ := s.fullTextSearch(query, fetchSize)
@@ -263,6 +263,9 @@ func (s *Store) SearchSmart(query string, queryVec []float32, k int) ([]Chunk, e
 	rrfScores := make(map[string]float32)
 
 	const rrfConstant = 60.0
+	// Poids FTS augmenté (x2) pour compenser le gap sémantique
+	// entre questions françaises et contenu technique anglais du corpus
+	const ftsWeight = 2.0
 
 	for rank, hit := range vecHits {
 		chunkMap[hit.ID] = &vecHits[rank]
@@ -272,7 +275,7 @@ func (s *Store) SearchSmart(query string, queryVec []float32, k int) ([]Chunk, e
 		if _, exists := chunkMap[hit.ID]; !exists {
 			chunkMap[hit.ID] = &keywordHits[rank]
 		}
-		rrfScores[hit.ID] += 1.0 / (rrfConstant + float32(rank+1))
+		rrfScores[hit.ID] += ftsWeight / (rrfConstant + float32(rank+1))
 	}
 
 	var maxScore float32 = 0.0001
