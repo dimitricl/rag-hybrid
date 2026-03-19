@@ -92,6 +92,8 @@ var ignoredFilenames = map[string]bool{
 	"NTC MF52 datasheet.pdf":                          true,
 	"5 mm Round White LED.pdf":                        true,
 	"presentation_Modèle_expo.md":                     true,
+	// Rapports personnels — contenu hors cours BTS
+	"Claverie_Dimitri_Rapport_de_stage_2026.pdf":      true,
 	// Mini-projets BTS — contenu hors sujet technique
 	"TP_Sprint2.pdf":                                  true,
 	"TP-Sprint1-Pilotage simple.pdf":                  true,
@@ -159,18 +161,37 @@ func ChunkFile(path string, size, overlap int) ([]Chunk, error) {
 	return splitSemantic(text, base, size, overlap), nil
 }
 
+// lastCompleteSentence retourne les derniers `maxRunes` caractères du texte
+// en commençant à la première phrase complète (évite de couper au milieu d'une phrase).
+// FIX : l'ancienne version retournait window entier si aucune ponctuation trouvée
+// → overlap pouvait être aussi grand que le chunk précédent entier.
+// Nouvelle version : cherche la DERNIÈRE ponctuation dans la fenêtre (pas la première)
+// pour maximiser le contexte tout en démarrant sur une phrase propre.
+// Si aucune ponctuation : retourne une chaîne vide (pas d'overlap plutôt qu'un overlap géant).
 func lastCompleteSentence(text string, maxRunes int) string {
 	runes := []rune(text)
 	if len(runes) <= maxRunes {
 		return text
 	}
-	window := string(runes[len(runes)-maxRunes:])
-	for i, r := range []rune(window) {
-		if (r == '.' || r == '!' || r == '?' || r == '\n') && i < len([]rune(window))-1 {
-			return strings.TrimSpace(string([]rune(window)[i+1:]))
+	window := []rune(text[len(text)-len(string(runes[len(runes)-maxRunes:]))-0:])
+	window = runes[len(runes)-maxRunes:]
+
+	// Cherche la DERNIÈRE ponctuation forte dans la fenêtre
+	// pour démarrer l'overlap sur une phrase propre
+	lastCut := -1
+	for i, r := range window {
+		if (r == '.' || r == '!' || r == '?') && i < len(window)-1 {
+			lastCut = i
 		}
 	}
-	return strings.TrimSpace(window)
+
+	if lastCut == -1 {
+		// Aucune phrase complète dans la fenêtre — pas d'overlap
+		// Vaut mieux pas d'overlap qu'un overlap qui duplique tout le chunk
+		return ""
+	}
+
+	return strings.TrimSpace(string(window[lastCut+1:]))
 }
 
 func isSection(para string) bool {
