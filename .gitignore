@@ -25,3 +25,5 @@ __pycache__/
 
 # Rapports de tests générés
 rapport_*.pdf
+*.bak
+*.backup
