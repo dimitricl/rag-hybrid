@@ -195,7 +195,14 @@ func CheckCoherence(q string, chunks []storage.Chunk) bool {
 		}
 	}
 
-	if len(foundGroups) <= 1 {
+	// FIX : logique inversée
+	// 0 groupe connu = question hors-domaine total → bloquer
+	// 1 groupe connu = question mono-domaine → laisser passer
+	// 2+ groupes connus = vérifier que les chunks couvrent tous les domaines
+	if len(foundGroups) == 0 {
+		return false
+	}
+	if len(foundGroups) == 1 {
 		return true
 	}
 
