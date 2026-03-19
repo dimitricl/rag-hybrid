@@ -45,7 +45,18 @@ func (c *Client) Embed(texts []string, model string) ([][]float32, error) {
 }
 
 func (c *Client) Generate(prompt, model string) (string, error) {
-	req := map[string]interface{}{"model": model, "prompt": prompt, "stream": false}
+	req := map[string]interface{}{
+		"model":  model,
+		"prompt": prompt,
+		"stream": false,
+		"options": map[string]interface{}{
+			"num_predict":    1024,
+			"stop":           []string{"Utilisateur:", "User:", "QUESTION :"},
+			"temperature":    0.1,
+			"repeat_penalty": 1.5,
+			"repeat_last_n":  256,
+		},
+	}
 	data, err := json.Marshal(req)
 	if err != nil {
 		return "", fmt.Errorf("generate marshal: %w", err)
@@ -74,7 +85,18 @@ func (c *Client) Generate(prompt, model string) (string, error) {
 // Sans ça : la goroutine continue de bloquer sur out <- token indéfiniment
 // une fois le buffer de 100 saturé → leak mémoire progressif sous charge.
 func (c *Client) GenerateStream(ctx context.Context, prompt, model string) (<-chan string, error) {
-	req := map[string]interface{}{"model": model, "prompt": prompt, "stream": true}
+	req := map[string]interface{}{
+		"model":  model,
+		"prompt": prompt,
+		"stream": true,
+		"options": map[string]interface{}{
+			"num_predict": 1024,  // Limite max tokens — empêche les boucles infinies
+			"stop":        []string{"Utilisateur:", "User:", "QUESTION :", "\n\nUtilisateur", "\n\nUser"},
+			"temperature": 0.1,  // Faible température = moins d'hallucinations/répétitions
+			"repeat_penalty": 1.5,
+			"repeat_last_n":  256, // Pénalise les répétitions de tokens
+		},
+	}
 	data, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("stream marshal: %w", err)
