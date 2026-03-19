@@ -7,6 +7,7 @@ import (
 
 	"rag-hybrid/pkg/chunker"
 	"rag-hybrid/pkg/client"
+	"rag-hybrid/pkg/config"
 	"rag-hybrid/pkg/storage"
 
 	"github.com/google/uuid"
@@ -16,14 +17,28 @@ import (
 type Indexer struct {
 	client     *client.Client
 	store      *storage.Store
-	EmbedModel string // modèle d'embedding — depuis config.yaml
+	EmbedModel string        // modèle d'embedding — depuis config.yaml
+	cfg        config.RAGConfig
 }
 
 func New(c *client.Client, s *storage.Store, embedModel string) *Indexer {
 	if embedModel == "" {
 		embedModel = "nomic-embed-text:latest" // fallback
 	}
-	return &Indexer{client: c, store: s, EmbedModel: embedModel}
+	return &Indexer{
+		client:     c,
+		store:      s,
+		EmbedModel: embedModel,
+		cfg:        config.RAGConfig{ChunkSize: 1500, ChunkOverlap: 150},
+	}
+}
+
+func NewWithConfig(c *client.Client, s *storage.Store, cfg config.RAGConfig) *Indexer {
+	embedModel := cfg.EmbedModel
+	if embedModel == "" {
+		embedModel = "nomic-embed-text:latest"
+	}
+	return &Indexer{client: c, store: s, EmbedModel: embedModel, cfg: cfg}
 }
 
 func (idx *Indexer) Index(dir string) error {
@@ -33,7 +48,7 @@ func (idx *Indexer) Index(dir string) error {
 
 	var all []chunker.Chunk
 	for _, f := range files {
-		c, _ := chunker.ChunkFile(f, 1000, 200)
+		c, _ := chunker.ChunkFile(f, idx.cfg.ChunkSize, idx.cfg.ChunkOverlap)
 		all = append(all, c...)
 	}
 	fmt.Printf("✂️  %d chunks\n", len(all))

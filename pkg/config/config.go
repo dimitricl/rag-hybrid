@@ -28,6 +28,8 @@ type RAGConfig struct {
 	EmbedModel   string  `yaml:"embed_model"`
 	DefaultModel string  `yaml:"default_model"`
 	RerankPool   int     `yaml:"rerank_pool"` // Nombre de chunks envoyés au reranker
+	ChunkSize    int     `yaml:"chunk_size"`   // Taille des chunks en runes (défaut 1500)
+	ChunkOverlap int     `yaml:"chunk_overlap"` // Overlap entre chunks en runes (défaut 150)
 	MinScore     float32 `yaml:"min_score"`   // Seuil de score pour inclusion dans le contexte
 }
 
@@ -49,6 +51,8 @@ func defaults() Config {
 			EmbedModel:   "nomic-embed-text:latest",
 			DefaultModel: "mistral:7b-instruct",
 			RerankPool:   6,
+		ChunkSize:    1500,
+		ChunkOverlap: 150,
 			MinScore:     0.30,
 		},
 	}
@@ -88,6 +92,8 @@ func Load() Config {
 		if cfg.RAG.EmbedModel == "" { cfg.RAG.EmbedModel = defaults().RAG.EmbedModel }
 		if cfg.RAG.DefaultModel == "" { cfg.RAG.DefaultModel = defaults().RAG.DefaultModel }
 		if cfg.RAG.RerankPool == 0  { cfg.RAG.RerankPool = defaults().RAG.RerankPool }
+		if cfg.RAG.ChunkSize == 0   { cfg.RAG.ChunkSize = defaults().RAG.ChunkSize }
+		if cfg.RAG.ChunkOverlap == 0 { cfg.RAG.ChunkOverlap = defaults().RAG.ChunkOverlap }
 		// MinScore à 0 est une valeur intentionnellement valide (tout passe),
 		// on applique le défaut seulement si négatif (valeur aberrante)
 		if cfg.RAG.MinScore < 0     { cfg.RAG.MinScore = defaults().RAG.MinScore }
