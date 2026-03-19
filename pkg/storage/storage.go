@@ -20,7 +20,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const vecDim = 768
+const vecDim = 1024
 const vecBytes = vecDim * 4
 
 type Chunk struct {
