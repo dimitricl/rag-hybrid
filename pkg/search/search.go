@@ -41,7 +41,7 @@ func (e *Engine) Store() *storage.Store {
 }
 
 func (e *Engine) Search(q string, k int) ([]storage.Chunk, error) {
-	v, err := e.client.Embed([]string{"Represent this sentence for searching relevant passages: " + q}, e.embedModel)
+	v, err := e.client.Embed([]string{"query: " + q}, e.embedModel)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +50,7 @@ func (e *Engine) Search(q string, k int) ([]storage.Chunk, error) {
 
 // EXPORTÉ : Restauration de SearchWithVec pour le cache de rag-chat
 func (e *Engine) SearchWithVec(q string, k int) ([]storage.Chunk, []float32, error) {
-	v, err := e.client.Embed([]string{"Represent this sentence for searching relevant passages: " + q}, e.embedModel)
+	v, err := e.client.Embed([]string{"query: " + q}, e.embedModel)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -241,11 +241,21 @@ func BuildContext(results []storage.Chunk, q string) (string, []storage.Chunk, i
 	var filteredChunks []storage.Chunk
 
 	seenFiles := make(map[string]bool)
+	seenTexts := make(map[string]bool) // Déduplique les chunks au contenu identique
 	sourceNum := 1
 	for _, r := range results {
 		if r.Score < minDisplayScore {
 			continue
 		}
+		// Ignore les chunks au contenu quasi-identique (premiers 100 chars)
+		textKey := r.Text
+		if len(textKey) > 100 {
+			textKey = textKey[:100]
+		}
+		if seenTexts[textKey] {
+			continue
+		}
+		seenTexts[textKey] = true
 		if r.RRFRaw > maxCosine {
 			maxCosine = r.RRFRaw
 		}
