@@ -162,6 +162,9 @@ func (idx *Indexer) Index(dir string) error {
 	}
 
 	fmt.Println("\n✅ Done")
+	// Flush HNSW une seule fois après toute l'indexation
+	// (InsertBatch ne persiste plus qu'un dirty flag — voir Fix 5)
+	idx.store.FlushHNSW()
 	return nil
 }
 

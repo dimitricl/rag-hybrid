@@ -36,12 +36,31 @@ type Store struct {
 	db       *sql.DB
 	vecs     *os.File
 	mu       sync.Mutex
-	vecCache map[string][]float32 // Cache RAM : clé = chunk.ID
-	hnswIdx  *hnsw.Graph[string]  // Index ANN : O(log n) au lieu de O(n)
-	hnswPath string               // Chemin de persistance hnsw.bin
+	vecCache *lruCache          // Cache RAM LRU borné : clé = chunk.ID
+	hnswIdx  *hnsw.Graph[string] // Index ANN : O(log n) au lieu de O(n)
+	hnswPath string              // Chemin de persistance hnsw.bin
+	// Paramètres RRF/reranker issus de config.yaml
+	rrfConstant       float32
+	ftsWeight         float32
+	ftsTechWeight     float32
+	rerankerTimeoutMs int
+	rerankerURL       string
+	hnswThreshold     int // full scan si len(vecCache) < seuil, HNSW sinon
+	hnswDirty         bool // true si l'index HNSW a été modifié depuis le dernier saveHNSW
 }
 
-func New(base string) (*Store, error) {
+// StoreConfig regroupe les paramètres injectés depuis config.yaml
+type StoreConfig struct {
+	RRFConstant       float32
+	FTSWeight         float32
+	FTSTechWeight     float32
+	RerankerTimeoutMs int
+	RerankerURL       string
+	HNSWThreshold     int // Full scan si nb chunks < seuil, HNSW sinon
+	VecCacheSize      int // Capacité max du cache LRU (0 = illimité)
+}
+
+func New(base string, cfg StoreConfig) (*Store, error) {
 	p := os.ExpandEnv(base)
 	if p[0] == '~' {
 		h, _ := os.UserHomeDir()
@@ -86,10 +105,16 @@ func New(base string) (*Store, error) {
 	hnswPath := filepath.Join(p, "hnsw.bin")
 
 	s := &Store{
-		db:       db,
-		vecs:     vf,
-		vecCache: make(map[string][]float32),
-		hnswPath: hnswPath,
+		db:                db,
+		vecs:              vf,
+		vecCache:          newLRUCache(cfg.VecCacheSize),
+		hnswPath:          hnswPath,
+		rrfConstant:       cfg.RRFConstant,
+		ftsWeight:         cfg.FTSWeight,
+		ftsTechWeight:     cfg.FTSTechWeight,
+		rerankerTimeoutMs: cfg.RerankerTimeoutMs,
+		rerankerURL:       cfg.RerankerURL,
+		hnswThreshold:     cfg.HNSWThreshold,
 	}
 
 	// --- Chargement des vecteurs en RAM ---
@@ -108,7 +133,7 @@ func New(base string) (*Store, error) {
 					for i := 0; i < vecDim; i++ {
 						vec[i] = math.Float32frombits(binary.LittleEndian.Uint32(data[offset+int64(i*4):]))
 					}
-					s.vecCache[id] = vec
+					s.vecCache.set(id, vec)
 				}
 			}
 		}
@@ -131,7 +156,7 @@ func (s *Store) loadOrBuildHNSW(path string) *hnsw.Graph[string] {
 		// Import nécessite un io.ByteReader — os.File ne l'implémente pas
 		// sans bufio, binary.Read retourne "does not implement io.ByteReader"
 		if err := g.Import(bufio.NewReader(f)); err == nil {
-			fmt.Printf("✅ Index HNSW chargé (%d vecteurs)\n", len(s.vecCache))
+			fmt.Printf("✅ Index HNSW chargé (%d vecteurs)\n", s.vecCache.len())
 			return g
 		}
 		fmt.Printf("⚠️  hnsw.bin corrompu — reconstruction depuis vecCache\n")
@@ -140,14 +165,14 @@ func (s *Store) loadOrBuildHNSW(path string) *hnsw.Graph[string] {
 	// Reconstruction depuis le cache RAM
 	g := hnsw.NewGraph[string]()
 	g.EfSearch = 100 // Augmenté pour plus de précision (défaut=20)
-	if len(s.vecCache) == 0 {
+	if s.vecCache.len() == 0 {
 		return g
 	}
 
 	var nodes []hnsw.Node[string]
-	for id, vec := range s.vecCache {
+	s.vecCache.forEach(func(id string, vec []float32) {
 		nodes = append(nodes, hnsw.MakeNode(id, vec))
-	}
+	})
 	g.Add(nodes...)
 	fmt.Printf("✅ Index HNSW construit (%d vecteurs)\n", len(nodes))
 
@@ -177,8 +202,26 @@ func (s *Store) saveHNSW(g *hnsw.Graph[string], path string) {
 }
 
 func (s *Store) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.hnswDirty {
+		s.saveHNSW(s.hnswIdx, s.hnswPath)
+		s.hnswDirty = false
+	}
 	s.db.Close()
 	s.vecs.Close()
+}
+
+// FlushHNSW force la persistance de l'index HNSW sur disque si modifié.
+// À appeler explicitement après une indexation batch pour ne pas attendre Close().
+func (s *Store) FlushHNSW() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.hnswDirty {
+		s.saveHNSW(s.hnswIdx, s.hnswPath)
+		s.hnswDirty = false
+		fmt.Printf("✅ Index HNSW persisté (%d vecteurs)\n", s.vecCache.len())
+	}
 }
 
 func (s *Store) InsertBatch(ids, texts, filenames []string, vecs [][]float32) error {
@@ -241,16 +284,14 @@ func (s *Store) InsertBatch(ids, texts, filenames []string, vecs [][]float32) er
 		return fmt.Errorf("InsertBatch: commit: %w", err)
 	}
 
-	// Phase 3 : mise à jour cache RAM + index HNSW (après commit SQL)
+	// Phase 3 : mise à jour cache LRU + index HNSW (après commit SQL)
 	var newNodes []hnsw.Node[string]
 	for i := range ids {
-		s.vecCache[ids[i]] = vecs[i]
+		s.vecCache.set(ids[i], vecs[i])
 		newNodes = append(newNodes, hnsw.MakeNode(ids[i], vecs[i]))
 	}
 	s.hnswIdx.Add(newNodes...)
-
-	// Persistance de l'index HNSW après chaque batch
-	s.saveHNSW(s.hnswIdx, s.hnswPath)
+	s.hnswDirty = true // persistance différée — flush dans Close() ou FlushHNSW()
 
 	return nil
 }
@@ -258,31 +299,40 @@ func (s *Store) InsertBatch(ids, texts, filenames []string, vecs [][]float32) er
 func (s *Store) SearchSmart(query string, queryVec []float32, k int) ([]Chunk, error) {
 	fetchSize := k * 10 // Augmenté de 5→10 pour plus de recall
 
-	vecHits, _ := s.searchVector(queryVec, fetchSize)
-	keywordHits, _ := s.fullTextSearch(query, fetchSize)
+	vecHits, err := s.searchVector(queryVec, fetchSize)
+	if err != nil {
+		fmt.Printf("⚠️  SearchSmart: searchVector failed: %v\n", err)
+		vecHits = nil
+	}
+	keywordHits, err := s.fullTextSearch(query, fetchSize)
+	if err != nil {
+		fmt.Printf("⚠️  SearchSmart: fullTextSearch failed: %v\n", err)
+		keywordHits = nil
+	}
+	if vecHits == nil && keywordHits == nil {
+		return nil, fmt.Errorf("SearchSmart: both search paths failed for query %q", query)
+	}
 
 	chunkMap := make(map[string]*Chunk)
 	rrfScores := make(map[string]float32)
 
-	const rrfConstant = 60.0
-
 	// Détection de query technique : si la query contient des termes
 	// spécifiques (registres, acronymes, sigles), on booste fortement le FTS
 	// car bge-m3 a un gap sémantique avec le contenu technique anglais/tabulaire
-	ftsWeight := float32(2.0)
+	ftsWeight := s.ftsWeight
 	if isTechnicalQuery(query) {
-		ftsWeight = 5.0 // FTS dominante sur les questions registres/acronymes
+		ftsWeight = s.ftsTechWeight // FTS dominante sur les questions registres/acronymes
 	}
 
 	for rank, hit := range vecHits {
 		chunkMap[hit.ID] = &vecHits[rank]
-		rrfScores[hit.ID] += 1.0 / (rrfConstant + float32(rank+1))
+		rrfScores[hit.ID] += 1.0 / (s.rrfConstant + float32(rank+1))
 	}
 	for rank, hit := range keywordHits {
 		if _, exists := chunkMap[hit.ID]; !exists {
 			chunkMap[hit.ID] = &keywordHits[rank]
 		}
-		rrfScores[hit.ID] += ftsWeight / (rrfConstant + float32(rank+1))
+		rrfScores[hit.ID] += ftsWeight / (s.rrfConstant + float32(rank+1))
 	}
 
 	var maxScore float32 = 0.0001
@@ -309,7 +359,7 @@ func (s *Store) SearchSmart(query string, queryVec []float32, k int) ([]Chunk, e
 	}
 	top := candidates[:rerankPool]
 
-	if reranked, err := rerankChunks(query, top); err == nil {
+	if reranked, err := s.rerankChunks(query, top); err == nil {
 		if len(reranked) > 0 {
 			best := reranked[0].Score
 			worst := reranked[len(reranked)-1].Score
@@ -334,7 +384,7 @@ func (s *Store) SearchSmart(query string, queryVec []float32, k int) ([]Chunk, e
 	return top, nil
 }
 
-func rerankChunks(query string, chunks []Chunk) ([]Chunk, error) {
+func (s *Store) rerankChunks(query string, chunks []Chunk) ([]Chunk, error) {
 	type rerankChunk struct {
 		ID    string  `json:"id"`
 		Text  string  `json:"text"`
@@ -359,8 +409,9 @@ func rerankChunks(query string, chunks []Chunk) ([]Chunk, error) {
 		return nil, fmt.Errorf("reranker marshal: %w", err)
 	}
 
-	httpClient := &http.Client{Timeout: 500 * time.Millisecond}
-	resp, err := httpClient.Post("http://127.0.0.1:8765", "application/json", bytes.NewReader(body))
+	timeout := time.Duration(s.rerankerTimeoutMs) * time.Millisecond
+	httpClient := &http.Client{Timeout: timeout}
+	resp, err := httpClient.Post(s.rerankerURL, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("reranker unreachable: %w", err)
 	}
@@ -385,13 +436,50 @@ func rerankChunks(query string, chunks []Chunk) ([]Chunk, error) {
 	return out, nil
 }
 
-// searchVector utilise l'index HNSW pour une recherche ANN en O(log n).
-// Remplace l'ancien full scan O(n) sur tous les chunks.
-// Fallback sur le full scan si l'index est vide (base fraîchement créée).
+// searchVector choisit automatiquement entre full scan (exact, O(n)) et HNSW (approx, O(log n))
+// selon le nombre de vecteurs en cache par rapport au seuil configuré.
+// - En dessous du seuil : full scan — résultats exacts, latence négligeable sur petites bases
+// - Au-dessus du seuil : HNSW — O(log n), précision légèrement réduite mais indispensable en charge
+// Fallback sur full scan si l'index HNSW est vide (ex: première indexation).
 func (s *Store) searchVector(queryVec []float32, k int) ([]Chunk, error) {
-	// Recherche linéaire exacte — plus précise que HNSW pour < 10k vecteurs
-	// HNSW approximate retourne des faux positifs quand les scores sont proches
-	return s.searchVectorFallback(queryVec, k)
+	n := s.vecCache.len()
+	threshold := s.hnswThreshold
+	if threshold <= 0 {
+		threshold = 2000 // valeur de sécurité si StoreConfig mal initialisé
+	}
+
+	if n < threshold || s.hnswIdx == nil || s.hnswIdx.Len() == 0 {
+		return s.searchVectorFallback(queryVec, k)
+	}
+
+	// Recherche HNSW — O(log n)
+	neighbors := s.hnswIdx.Search(queryVec, k)
+	if len(neighbors) == 0 {
+		return s.searchVectorFallback(queryVec, k)
+	}
+
+	// Récupère les métadonnées depuis SQLite pour chaque ID retourné par HNSW
+	results := make([]Chunk, 0, len(neighbors))
+	for _, node := range neighbors {
+		id := node.Key
+		var c Chunk
+		err := s.db.QueryRow("SELECT id, text, filename FROM chunks WHERE id = ?", id).
+			Scan(&c.ID, &c.Text, &c.Filename)
+		if err != nil {
+			continue
+		}
+		vec, ok := s.vecCache.get(id)
+		if !ok {
+			continue
+		}
+		c.Score = cosineSimilarity(queryVec, vec)
+		results = append(results, c)
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
+	return results, nil
 }
 
 // searchVectorFallback : full scan O(n) — utilisé uniquement si HNSW indisponible.
@@ -410,7 +498,7 @@ func (s *Store) searchVectorFallback(queryVec []float32, k int) ([]Chunk, error)
 			continue
 		}
 
-		vec, ok := s.vecCache[c.ID]
+		vec, ok := s.vecCache.get(c.ID)
 		if !ok {
 			buf := make([]byte, vecBytes)
 			s.vecs.ReadAt(buf, offset)
@@ -418,7 +506,7 @@ func (s *Store) searchVectorFallback(queryVec []float32, k int) ([]Chunk, error)
 			for i := 0; i < vecDim; i++ {
 				vec[i] = math.Float32frombits(binary.LittleEndian.Uint32(buf[i*4:]))
 			}
-			s.vecCache[c.ID] = vec
+			s.vecCache.set(c.ID, vec)
 		}
 
 		c.Score = cosineSimilarity(queryVec, vec)

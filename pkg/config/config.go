@@ -24,13 +24,19 @@ type WebConfig struct {
 }
 
 type RAGConfig struct {
-	DBPath       string  `yaml:"db_path"`
-	EmbedModel   string  `yaml:"embed_model"`
-	DefaultModel string  `yaml:"default_model"`
-	RerankPool   int     `yaml:"rerank_pool"` // Nombre de chunks envoyés au reranker
-	ChunkSize    int     `yaml:"chunk_size"`   // Taille des chunks en runes (défaut 1500)
-	ChunkOverlap int     `yaml:"chunk_overlap"` // Overlap entre chunks en runes (défaut 150)
-	MinScore     float32 `yaml:"min_score"`   // Seuil de score pour inclusion dans le contexte
+	DBPath             string  `yaml:"db_path"`
+	EmbedModel         string  `yaml:"embed_model"`
+	DefaultModel       string  `yaml:"default_model"`
+	RerankPool         int     `yaml:"rerank_pool"`          // Nombre de chunks envoyés au reranker
+	ChunkSize          int     `yaml:"chunk_size"`           // Taille des chunks en runes (défaut 1500)
+	ChunkOverlap       int     `yaml:"chunk_overlap"`        // Overlap entre chunks en runes (défaut 150)
+	MinScore           float32 `yaml:"min_score"`            // Seuil de score pour inclusion dans le contexte
+	RRFConstant        float32 `yaml:"rrf_constant"`         // Constante RRF (défaut 60.0)
+	FTSWeight          float32 `yaml:"fts_weight"`           // Poids FTS pour queries normales (défaut 2.0)
+	FTSTechWeight      float32 `yaml:"fts_tech_weight"`      // Poids FTS pour queries techniques (défaut 5.0)
+	RerankerTimeoutMs  int     `yaml:"reranker_timeout_ms"`  // Timeout HTTP vers reranker en ms (défaut 500)
+	HNSWThreshold      int     `yaml:"hnsw_threshold"`       // Nb de chunks au-dessus duquel HNSW remplace le full scan (défaut 2000)
+	VecCacheSize       int     `yaml:"vec_cache_size"`       // Capacité max du cache LRU vecteurs (0 = illimité, défaut 10000)
 }
 
 type Config struct {
@@ -47,13 +53,19 @@ func defaults() Config {
 		Reranker: RerankerConfig{Host: "127.0.0.1", Port: 8765},
 		Web:      WebConfig{Port: 8080},
 		RAG: RAGConfig{
-			DBPath:       "~/.rag-hybrid",
-			EmbedModel:   "nomic-embed-text:latest",
-			DefaultModel: "mistral:7b-instruct",
-			RerankPool:   6,
-		ChunkSize:    1500,
-		ChunkOverlap: 150,
-			MinScore:     0.30,
+			DBPath:            "~/.rag-hybrid",
+			EmbedModel:        "nomic-embed-text:latest",
+			DefaultModel:      "mistral:7b-instruct",
+			RerankPool:        6,
+			ChunkSize:         1500,
+			ChunkOverlap:      150,
+			MinScore:          0.30,
+			RRFConstant:       60.0,
+			FTSWeight:         2.0,
+			FTSTechWeight:     5.0,
+			RerankerTimeoutMs: 500,
+			HNSWThreshold:     2000,
+			VecCacheSize:      10000,
 		},
 	}
 }
@@ -97,6 +109,14 @@ func Load() Config {
 		// MinScore à 0 est une valeur intentionnellement valide (tout passe),
 		// on applique le défaut seulement si négatif (valeur aberrante)
 		if cfg.RAG.MinScore < 0     { cfg.RAG.MinScore = defaults().RAG.MinScore }
+		if cfg.RAG.RRFConstant == 0      { cfg.RAG.RRFConstant = defaults().RAG.RRFConstant }
+		if cfg.RAG.FTSWeight == 0        { cfg.RAG.FTSWeight = defaults().RAG.FTSWeight }
+		if cfg.RAG.FTSTechWeight == 0    { cfg.RAG.FTSTechWeight = defaults().RAG.FTSTechWeight }
+		if cfg.RAG.RerankerTimeoutMs == 0 { cfg.RAG.RerankerTimeoutMs = defaults().RAG.RerankerTimeoutMs }
+		if cfg.RAG.HNSWThreshold == 0     { cfg.RAG.HNSWThreshold = defaults().RAG.HNSWThreshold }
+		// VecCacheSize à 0 = illimité (valeur intentionnellement valide),
+		// on applique le défaut seulement si négatif
+		if cfg.RAG.VecCacheSize < 0      { cfg.RAG.VecCacheSize = defaults().RAG.VecCacheSize }
 		break
 	}
 

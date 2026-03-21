@@ -17,3 +17,16 @@ rag:
   min_score: 0.30
   chunk_size: 1500
   chunk_overlap: 150
+  # Fusion RRF : constante de lissage (plus élevé = résultats moins sensibles au rang)
+  rrf_constant: 60.0
+  # Poids FTS pour queries normales vs queries techniques (registres, acronymes, hex)
+  fts_weight: 2.0
+  fts_tech_weight: 5.0
+  # Timeout HTTP vers le reranker Python en millisecondes
+  reranker_timeout_ms: 500
+  # Seuil de chunks au-dessus duquel HNSW remplace le full scan
+  # En dessous : scan exact O(n) — au-dessus : HNSW approx O(log n)
+  hnsw_threshold: 2000
+  # Capacité max du cache LRU vecteurs en RAM (0 = illimité)
+  # 10000 chunks × 768 dims × 4 bytes ≈ 30 MB
+  vec_cache_size: 10000
