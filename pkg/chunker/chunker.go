@@ -130,8 +130,9 @@ func detectDomain(path string) string {
 		return "[Domaine: Cybersécurité DDoS]"
 	case strings.Contains(lower, "i2c") || strings.Contains(lower, "spi") ||
 		strings.Contains(lower, "uart") || strings.Contains(lower, "serie") ||
-		strings.Contains(lower, "infrarouge") || strings.Contains(lower, "liaison"):
-		return "[Domaine: Communication Série Protocoles]"
+		strings.Contains(lower, "infrarouge") || strings.Contains(lower, "liaison") ||
+		strings.Contains(lower, "communication"):
+		return "[Domaine: Communication Série I2C SPI UART Protocoles]"
 	case strings.Contains(lower, "cpp") || strings.Contains(lower, "c_chap") ||
 		strings.Contains(lower, "langage") || strings.Contains(lower, "algo"):
 		return "[Domaine: Programmation C C++]"
