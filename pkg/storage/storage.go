@@ -535,6 +535,28 @@ func (s *Store) searchVectorFallback(queryVec []float32, k int) ([]Chunk, error)
 func (s *Store) fullTextSearch(query string, k int) ([]Chunk, error) {
 	words := strings.Fields(query)
 
+	// Recherche LIKE directe pour les tokens contenant de la ponctuation interne
+	// (ex: "802.1X", "I²C", "RS-232") que FTS5 tokenise incorrectement.
+	// On tente cette passe en premier — si elle retourne des résultats, on s'arrête.
+	var punctTokens []string
+	for _, w := range words {
+		clean := strings.Trim(w, ".,;:!?\"'()[]")
+		if len([]rune(clean)) < 3 {
+			continue
+		}
+		// Heuristique : token avec chiffre+lettre+ponctuation interne → terme technique
+		hasInternalPunct := strings.ContainsAny(clean, ".-/") &&
+			len([]rune(clean)) >= 4
+		if hasInternalPunct {
+			punctTokens = append(punctTokens, clean)
+		}
+	}
+	if len(punctTokens) > 0 {
+		if results, err := s.likeSearch(punctTokens, k); err == nil && len(results) > 0 {
+			return results, nil
+		}
+	}
+
 	frenchStopWords := map[string]bool{
 		"comment": true, "fonctionne": true, "fonctionner": true,
 		"quels": true, "quelle": true, "quelles": true, "quel": true,
@@ -631,6 +653,42 @@ func (s *Store) executeFTS(ftsQuery string, k int) ([]Chunk, error) {
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Score > results[j].Score
 	})
+	return results, nil
+}
+
+// likeSearch : recherche SQL LIKE sur chunks.text pour les tokens
+// que FTS5 tokenise incorrectement (ponctuation interne : 802.1X, RS-232, etc.)
+// Retourne les k meilleurs résultats avec un score fixe de 0.8.
+func (s *Store) likeSearch(tokens []string, k int) ([]Chunk, error) {
+	if len(tokens) == 0 {
+		return nil, nil
+	}
+
+	// Construit : WHERE text LIKE '%802.1X%' AND text LIKE '%autre%'
+	baseQuery := "SELECT id, text, filename FROM chunks WHERE "
+	args := make([]interface{}, 0, len(tokens)+1)
+	clauses := make([]string, 0, len(tokens))
+	for _, t := range tokens {
+		clauses = append(clauses, "text LIKE ?")
+		args = append(args, "%"+t+"%")
+	}
+	baseQuery += strings.Join(clauses, " AND ") + " LIMIT ?"
+	args = append(args, k)
+
+	rows, err := s.db.Query(baseQuery, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []Chunk
+	for rows.Next() {
+		var c Chunk
+		if err := rows.Scan(&c.ID, &c.Text, &c.Filename); err == nil {
+			c.Score = 0.8 // score fixe élevé : match exact sur terme technique
+			results = append(results, c)
+		}
+	}
 	return results, nil
 }
 

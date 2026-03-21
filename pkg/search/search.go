@@ -285,7 +285,7 @@ SOURCES :
 
 QUESTION : %s
 
-⚠️ INSTRUCTION FINALE CRITIQUE : Si la question demande d'associer deux choses (ex: ADC et Infrarouge) et que les sources ne disent pas EXPLICITEMENT comment les utiliser ensemble, tu as l'interdiction absolue d'expliquer quoi que ce soit. Tu DOIS écrire UNIQUEMENT : "Désolé, cette opération n'est pas décrite dans le cours."
+⚠️ INSTRUCTION FINALE : Tu dois répondre en te basant sur les sources fournies. Si les sources couvrent le sujet de la question (même avec des termes différents ou connexes), synthétise une réponse à partir de leur contenu. N'écris "Désolé, cette opération n'est pas décrite dans le cours." UNIQUEMENT si les sources ne contiennent vraiment aucune information pertinente pour répondre à la question (ex: ADC + Infrarouge ensemble, TensorFlow sur ATmega).
 
 RÉPONSE :`, systemPrompt, specificPrompt, ctxStr, q)
 }
