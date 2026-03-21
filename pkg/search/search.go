@@ -26,13 +26,23 @@ type Engine struct {
 	client     *client.Client
 	store      *storage.Store
 	embedModel string
+	minScore   float32 // seuil de cohérence sémantique — depuis config.yaml (min_score)
 }
 
 func New(c *client.Client, s *storage.Store, embedModel string) *Engine {
 	if embedModel == "" {
 		embedModel = "nomic-embed-text:latest"
 	}
-	return &Engine{client: c, store: s, embedModel: embedModel}
+	return &Engine{client: c, store: s, embedModel: embedModel, minScore: 0.30}
+}
+
+// NewWithMinScore crée un Engine avec le seuil de cohérence issu de config.yaml.
+func NewWithMinScore(c *client.Client, s *storage.Store, embedModel string, minScore float32) *Engine {
+	e := New(c, s, embedModel)
+	if minScore > 0 {
+		e.minScore = minScore
+	}
+	return e
 }
 
 // EXPORTÉ : Permet à main.go d'accéder à la DB
@@ -175,57 +185,19 @@ func detectPlatform(chunks []storage.Chunk) string {
 	return labels[best]
 }
 
-func CheckCoherence(q string, chunks []storage.Chunk) bool {
-	conceptGroups := [][]string{
-		{"adc", "adcsra", "admux", "analogique", "numérique", "convertisseur"},
-		{"infrarouge", "infrared", "ir ", "rc5", "nec", "télécommande"},
-		{"uart", "série", "serial", "usart", "rx", "tx", "baud"},
-		{"timer", "pwm", "tccr", "ocr", "compteur", "rapport cyclique"},
-		{"gpio", "ddrb", "portb", "pinb", "entrée", "sortie"},
-		{"spi", "i2c", "twi", "scl", "sda", "mosi", "miso"},
-		{"réseau", "ethernet", "tcp", "udp", "ip", "wifi", "zigbee", "lora", "802.1x", "vlan", "switch"},
-		{"ddos", "attaque", "slowloris", "exploit", "vulnérabilité", "fail2ban", "iptables"},
-	}
-
-	qLower := strings.ToLower(q)
-	var foundGroups []int
-
-	for i, group := range conceptGroups {
-		for _, word := range group {
-			if strings.Contains(qLower, word) {
-				foundGroups = append(foundGroups, i)
-				break
-			}
-		}
-	}
-
-	// FIX : logique inversée
-	// 0 groupe connu = question hors-domaine total → bloquer
-	// 1 groupe connu = question mono-domaine → laisser passer
-	// 2+ groupes connus = vérifier que les chunks couvrent tous les domaines
-	if len(foundGroups) == 0 {
-		return false
-	}
-	if len(foundGroups) == 1 {
-		return true
-	}
-
-	for _, chunk := range chunks {
-		chunkLower := strings.ToLower(chunk.Text)
-		matchCount := 0
-		for _, groupIdx := range foundGroups {
-			groupFound := false
-			for _, word := range conceptGroups[groupIdx] {
-				if strings.Contains(chunkLower, word) {
-					groupFound = true
-					break
-				}
-			}
-			if groupFound {
-				matchCount++
-			}
-		}
-		if matchCount == len(foundGroups) {
+// CheckCoherence vérifie que les chunks retournés sont suffisamment pertinents
+// pour justifier une réponse. Utilise le score RRF normalisé du meilleur chunk.
+//
+// Ancienne approche : keywords hardcodés par domaine → bloquait des questions
+// valides dont les termes exacts n'étaient pas dans la liste (ex: "contremesures",
+// "I2C" avec des chunks non-littéraux).
+//
+// Nouvelle approche : si au moins un chunk dépasse minScore, on laisse passer.
+// Le modèle a déjà les instructions pour répondre "non documenté" si les sources
+// ne couvrent pas la question — pas besoin d'un garde-fou keyword en plus.
+func CheckCoherence(q string, chunks []storage.Chunk, minScore float32) bool {
+	for _, c := range chunks {
+		if c.Score >= minScore {
 			return true
 		}
 	}
@@ -331,7 +303,7 @@ func (e *Engine) AskWithModel(q, model string) (string, error) {
 	if included == 0 {
 		return "Aucune source suffisamment pertinente trouvée. Essaie de reformuler.", nil
 	}
-	if !CheckCoherence(q, res) {
+	if !CheckCoherence(q, res, e.minScore) {
 		return "Désolé, cette opération n'est pas décrite dans le cours.", nil
 	}
 	return e.client.Generate(buildPrompt(ctxStr, q, model, res), model)
@@ -354,7 +326,7 @@ func (e *Engine) AskStreamWithModel(ctx context.Context, q, model string) (<-cha
 		return out, nil
 	}
 
-	if !CheckCoherence(q, res) {
+	if !CheckCoherence(q, res, e.minScore) {
 		out := make(chan string, 1)
 		out <- "Désolé, cette opération n'est pas décrite dans le cours."
 		close(out)

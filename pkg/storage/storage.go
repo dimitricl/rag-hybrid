@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"os"
@@ -234,13 +235,21 @@ func (s *Store) InsertBatch(ids, texts, filenames []string, vecs [][]float32) er
 	}
 	defer tx.Rollback()
 
-	info, err := s.vecs.Stat()
-	if err != nil {
-		return fmt.Errorf("InsertBatch: stat vectors.bin: %w", err)
-	}
-	offset := info.Size()
-
 	// Phase 1 : écriture des vecteurs binaires
+	// flock POSIX : sérialise les écritures inter-process sur vectors.bin
+	// (SQLite WAL protège rag.db, mais vectors.bin n'a pas de protection native)
+	if err := flockExclusive(s.vecs); err != nil {
+		return fmt.Errorf("InsertBatch: flock vectors.bin: %w", err)
+	}
+	defer flockUnlock(s.vecs)
+
+	// Seek end-of-file pour obtenir l'offset courant de manière atomique
+	// (plus fiable que Stat().Size() qui peut être racé entre process)
+	offset, err := s.vecs.Seek(0, io.SeekEnd)
+	if err != nil {
+		return fmt.Errorf("InsertBatch: seek vectors.bin: %w", err)
+	}
+
 	vecOffsets := make([]int64, len(ids))
 	for i := range ids {
 		vecOffsets[i] = offset

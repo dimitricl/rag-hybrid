@@ -436,6 +436,23 @@ func extractXMLText(r interface{ Read([]byte) (int, error) }) (string, error) {
 	decoder := xml.NewDecoder(r)
 	inText := false
 
+	// Namespaces légitimes pour les balises <w:t> (DOCX) et <a:t> (PPTX/DrawingML)
+	// Toute balise <t> dans un autre namespace (custom XML, SVG, etc.) est ignorée.
+	const (
+		nsWordprocessingML = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+		nsDrawingML        = "http://schemas.openxmlformats.org/drawingml/2006/main"
+	)
+
+	isTextTag := func(name xml.Name) bool {
+		return name.Local == "t" &&
+			(name.Space == nsWordprocessingML || name.Space == nsDrawingML)
+	}
+
+	isParagraphTag := func(name xml.Name) bool {
+		return name.Local == "p" &&
+			(name.Space == nsWordprocessingML || name.Space == nsDrawingML)
+	}
+
 	for {
 		tok, err := decoder.Token()
 		if err != nil {
@@ -443,14 +460,14 @@ func extractXMLText(r interface{ Read([]byte) (int, error) }) (string, error) {
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
-			if t.Name.Local == "t" {
+			if isTextTag(t.Name) {
 				inText = true
 			}
 		case xml.EndElement:
-			if t.Name.Local == "t" {
+			if isTextTag(t.Name) {
 				inText = false
 			}
-			if t.Name.Local == "p" {
+			if isParagraphTag(t.Name) {
 				sb.WriteString("\n\n")
 			}
 		case xml.CharData:
