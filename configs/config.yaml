@@ -26,7 +26,7 @@ rag:
   reranker_timeout_ms: 500
   # Seuil de chunks au-dessus duquel HNSW remplace le full scan
   # En dessous : scan exact O(n) — au-dessus : HNSW approx O(log n)
-  hnsw_threshold: 2000
+  hnsw_threshold: 10000
   # Capacité max du cache LRU vecteurs en RAM (0 = illimité)
   # 10000 chunks × 768 dims × 4 bytes ≈ 30 MB
   vec_cache_size: 10000
