@@ -127,6 +127,7 @@ func (s *Store) loadOrBuildHNSW(path string) *hnsw.Graph[string] {
 	if f, err := os.Open(path); err == nil {
 		defer f.Close()
 		g := hnsw.NewGraph[string]()
+		g.EfSearch = 100 // Augmenté pour plus de précision (défaut=20)
 		// Import nécessite un io.ByteReader — os.File ne l'implémente pas
 		// sans bufio, binary.Read retourne "does not implement io.ByteReader"
 		if err := g.Import(bufio.NewReader(f)); err == nil {
@@ -138,6 +139,7 @@ func (s *Store) loadOrBuildHNSW(path string) *hnsw.Graph[string] {
 
 	// Reconstruction depuis le cache RAM
 	g := hnsw.NewGraph[string]()
+	g.EfSearch = 100 // Augmenté pour plus de précision (défaut=20)
 	if len(s.vecCache) == 0 {
 		return g
 	}
@@ -387,70 +389,9 @@ func rerankChunks(query string, chunks []Chunk) ([]Chunk, error) {
 // Remplace l'ancien full scan O(n) sur tous les chunks.
 // Fallback sur le full scan si l'index est vide (base fraîchement créée).
 func (s *Store) searchVector(queryVec []float32, k int) ([]Chunk, error) {
-	// Fallback full scan si HNSW vide (ex: première indexation en cours)
-	if s.hnswIdx == nil || s.hnswIdx.Len() == 0 {
-		return s.searchVectorFallback(queryVec, k)
-	}
-
-	// Recherche ANN : retourne les k plus proches voisins approximatifs
-	neighbors := s.hnswIdx.Search(queryVec, k)
-
-	if len(neighbors) == 0 {
-		return s.searchVectorFallback(queryVec, k)
-	}
-
-	// Récupération des métadonnées depuis SQLite par IDs
-	if len(neighbors) == 0 {
-		return nil, nil
-	}
-
-	// Construction de la clause IN pour la requête SQL
-	placeholders := make([]string, len(neighbors))
-	args := make([]interface{}, len(neighbors))
-	for i, n := range neighbors {
-		placeholders[i] = "?"
-		args[i] = n.Key
-	}
-
-	query := fmt.Sprintf(
-		"SELECT id, text, filename FROM chunks WHERE id IN (%s)",
-		strings.Join(placeholders, ","),
-	)
-
-	rows, err := s.db.Query(query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	// Map id → chunk pour associer les scores cosine
-	chunkByID := make(map[string]Chunk)
-	for rows.Next() {
-		var c Chunk
-		if err := rows.Scan(&c.ID, &c.Text, &c.Filename); err != nil {
-			continue
-		}
-		chunkByID[c.ID] = c
-	}
-
-	// Calcul du score cosine réel pour chaque voisin HNSW
-	var results []Chunk
-	for _, n := range neighbors {
-		c, ok := chunkByID[n.Key]
-		if !ok {
-			continue
-		}
-		if vec, ok := s.vecCache[c.ID]; ok {
-			c.Score = cosineSimilarity(queryVec, vec)
-		}
-		results = append(results, c)
-	}
-
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Score > results[j].Score
-	})
-
-	return results, nil
+	// Recherche linéaire exacte — plus précise que HNSW pour < 10k vecteurs
+	// HNSW approximate retourne des faux positifs quand les scores sont proches
+	return s.searchVectorFallback(queryVec, k)
 }
 
 // searchVectorFallback : full scan O(n) — utilisé uniquement si HNSW indisponible.

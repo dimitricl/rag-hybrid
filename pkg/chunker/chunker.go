@@ -110,6 +110,36 @@ var extractedExts = map[string]bool{
 
 const minChunkRunes = 150
 
+// detectDomain retourne un préfixe contextuel basé sur le chemin du fichier
+// Ce préfixe améliore l'embedding en ancrant le chunk dans son domaine
+func detectDomain(path string) string {
+	lower := strings.ToLower(path)
+	switch {
+	case strings.Contains(lower, "atm") || strings.Contains(lower, "analog") ||
+		strings.Contains(lower, "timer") || strings.Contains(lower, "adc") ||
+		strings.Contains(lower, "khin") || strings.Contains(lower, "pwm") ||
+		strings.Contains(lower, "datasheet"):
+		return "[Domaine: Microcontrôleur ATmega328 AVR Électronique]"
+	case strings.Contains(lower, "802") || strings.Contains(lower, "reseau") ||
+		strings.Contains(lower, "réseau") || strings.Contains(lower, "cisco") ||
+		strings.Contains(lower, "vlan") || strings.Contains(lower, "trunk") ||
+		strings.Contains(lower, "gardon") || strings.Contains(lower, "mqtt"):
+		return "[Domaine: Réseau Protocoles Sécurité]"
+	case strings.Contains(lower, "ddos") || strings.Contains(lower, "slowloris") ||
+		strings.Contains(lower, "contremesure") || strings.Contains(lower, "attaque"):
+		return "[Domaine: Cybersécurité DDoS]"
+	case strings.Contains(lower, "i2c") || strings.Contains(lower, "spi") ||
+		strings.Contains(lower, "uart") || strings.Contains(lower, "serie") ||
+		strings.Contains(lower, "infrarouge") || strings.Contains(lower, "liaison"):
+		return "[Domaine: Communication Série Protocoles]"
+	case strings.Contains(lower, "cpp") || strings.Contains(lower, "c_chap") ||
+		strings.Contains(lower, "langage") || strings.Contains(lower, "algo"):
+		return "[Domaine: Programmation C C++]"
+	default:
+		return ""
+	}
+}
+
 func ChunkFile(path string, size, overlap int) ([]Chunk, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	// Normalise NFC — macOS stocke les noms de fichiers en NFD (e + combining accent)
@@ -158,7 +188,7 @@ func ChunkFile(path string, size, overlap int) ([]Chunk, error) {
 		return nil, nil
 	}
 
-	return splitSemantic(text, base, size, overlap), nil
+	return splitSemantic(text, base, detectDomain(path), size, overlap), nil
 }
 
 // lastCompleteSentence retourne les derniers `maxRunes` caractères du texte
@@ -226,7 +256,7 @@ func isCodeBlock(para string) bool {
 	return strings.HasPrefix(para, "```") || strings.HasPrefix(para, "~~~")
 }
 
-func splitSemantic(text, filename string, size, overlap int) []Chunk {
+func splitSemantic(text, filename, domainPrefix string, size, overlap int) []Chunk {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
 
@@ -245,7 +275,11 @@ func splitSemantic(text, filename string, size, overlap int) []Chunk {
 	flush := func() {
 		s := strings.TrimSpace(buf.String())
 		if utf8.RuneCountInString(s) >= minChunkRunes {
-			chunks = append(chunks, Chunk{Text: s, Filename: filename})
+			text := s
+			if domainPrefix != "" {
+				text = domainPrefix + "\n" + s
+			}
+			chunks = append(chunks, Chunk{Text: text, Filename: filename})
 		}
 		buf.Reset()
 	}
