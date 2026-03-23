@@ -1,119 +1,104 @@
 #!/usr/bin/env python3
 """
-reranker.py — CrossEncoder HTTP service
-Fixes appliqués :
-  - ThreadingMixIn : gestion concurrente (rag-web multi-user)
-  - Vérification Content-Length manquant
-  - Réponse d'erreur JSON structurée au lieu de crash silencieux
-  - Timeout de lecture configuré via env RERANKER_TIMEOUT (défaut 30s)
+reranker.py — CrossEncoder HTTP service with FastAPI
 """
 
 import os
-import json
 import logging
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from socketserver import ThreadingMixIn
+from typing import List, Optional, Any, Dict
+from contextlib import asynccontextmanager
 
+import uvicorn
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, ConfigDict
 from sentence_transformers import CrossEncoder
 
+# --- Configuration & Logging ---
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
+logger = logging.getLogger("reranker")
 
 MODEL_NAME = os.environ.get("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
-model = CrossEncoder(MODEL_NAME)
-logging.info(f"✅ CrossEncoder '{MODEL_NAME}' prêt sur :8765")
+HOST = os.environ.get("RERANKER_HOST", "0.0.0.0")  # Bind to all interfaces by default for container friendliness
+PORT = int(os.environ.get("RERANKER_PORT", "8765"))
 
+# --- Global State ---
+ml_models = {}
 
-class Handler(BaseHTTPRequestHandler):
-    # Supprime les logs HTTP par défaut (trop verbeux pour un service interne)
-    def log_message(self, fmt, *args):
-        pass
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Load model on startup
+    logger.info(f"Loading CrossEncoder model: {MODEL_NAME}...")
+    try:
+        ml_models["encoder"] = CrossEncoder(MODEL_NAME)
+        logger.info(f"✅ CrossEncoder '{MODEL_NAME}' ready.")
+    except Exception as e:
+        logger.error(f"❌ Failed to load model: {e}")
+        # We don't raise here to allow app to start, but /rerank will fail gracefully
+    yield
+    # Clean up on shutdown
+    ml_models.clear()
 
-    def _send_json(self, code: int, payload):
-        body = json.dumps(payload).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        try:
-            self.wfile.write(body)
-        except BrokenPipeError:
-            # Le client Go a fermé (timeout 500ms) — normal, on ne logge pas
-            pass
+app = FastAPI(title="RAG Hybrid Reranker", version="2.0.0", lifespan=lifespan)
 
-    def do_GET(self):
-        if self.path == "/health":
-            self._send_json(200, {"status": "ok", "model": MODEL_NAME})
-        else:
-            self._send_json(404, {"error": "not found"})
+# --- Pydantic Models ---
 
-    def do_POST(self):
-        # --- Validation de Content-Length ---
-        content_length = self.headers.get("Content-Length")
-        if not content_length:
-            self._send_json(411, {"error": "Content-Length required"})
-            return
+class Chunk(BaseModel):
+    id: str
+    text: str
+    filename: str
+    # Optional fields that might be present in the input
+    rrf_raw: Optional[float] = 0.0
+    score: Optional[float] = 0.0
+    rerank_score: Optional[float] = 0.0
+    
+    # Allow extra fields to be passed through (e.g. metadata)
+    model_config = ConfigDict(extra='allow')
 
-        try:
-            length = int(content_length)
-        except ValueError:
-            self._send_json(400, {"error": "Invalid Content-Length"})
-            return
+class RerankRequest(BaseModel):
+    query: str
+    chunks: List[Chunk]
 
-        # --- Lecture et parsing JSON ---
-        try:
-            raw = self.rfile.read(length)
-            data = json.loads(raw)
-        except (json.JSONDecodeError, Exception) as e:
-            self._send_json(400, {"error": f"JSON parse error: {e}"})
-            return
+# --- Endpoints ---
 
-        # --- Validation du payload ---
-        query = data.get("query", "")
-        chunks = data.get("chunks", [])
+@app.get("/health")
+def health_check():
+    if "encoder" not in ml_models:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    return {"status": "ok", "model": MODEL_NAME}
 
-        if not query:
-            self._send_json(400, {"error": "Missing 'query' field"})
-            return
-        if not chunks:
-            # Aucun chunk → retour vide, pas une erreur
-            self._send_json(200, [])
-            return
+@app.post("/")
+def rerank(req: RerankRequest):
+    encoder = ml_models.get("encoder")
+    if not encoder:
+        raise HTTPException(status_code=503, detail="Model not loaded or initialization failed")
 
-        # --- Scoring CrossEncoder ---
-        try:
-            pairs = [[query, c.get("text", "")] for c in chunks]
-            scores = model.predict(pairs).tolist()
-        except Exception as e:
-            logging.error(f"CrossEncoder predict failed: {e}")
-            self._send_json(500, {"error": f"Model predict failed: {e}"})
-            return
+    if not req.chunks:
+        return []
 
-        for i, c in enumerate(chunks):
-            c["rerank_score"] = scores[i]
+    try:
+        # Prepare pairs for CrossEncoder
+        pairs = [[req.query, c.text] for c in req.chunks]
+        
+        # Predict scores
+        # scores is a numpy array or list of floats
+        scores = encoder.predict(pairs).tolist()
+        
+        # Update chunks with scores
+        for i, chunk in enumerate(req.chunks):
+            chunk.rerank_score = float(scores[i])
 
-        ranked = sorted(chunks, key=lambda x: x["rerank_score"], reverse=True)
-        self._send_json(200, ranked)
+        # Sort by rerank_score descending
+        req.chunks.sort(key=lambda x: x.rerank_score, reverse=True)
+        
+        return req.chunks
 
-
-class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
-    """
-    ThreadingMixIn : chaque requête POST est traitée dans un thread séparé.
-    Sans ça, une inférence lente (gros batch) bloque TOUTES les requêtes suivantes.
-    daemon_threads = True : les threads meurent avec le process principal (pas de zombie).
-    """
-    daemon_threads = True
-
+    except Exception as e:
+        logger.error(f"Prediction failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    host = os.environ.get("RERANKER_HOST", "127.0.0.1")
-    port = int(os.environ.get("RERANKER_PORT", "8765"))
-    server = ThreadedHTTPServer((host, port), Handler)
-    logging.info(f"🚀 Reranker threaded sur {host}:{port}")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        logging.info("Arrêt reranker.")
-        server.server_close()
+    logger.info(f"🚀 Starting Reranker API on {HOST}:{PORT}")
+    uvicorn.run("reranker:app", host=HOST, port=PORT, log_level="info", reload=False)

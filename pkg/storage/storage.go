@@ -37,7 +37,7 @@ type Store struct {
 	db       *sql.DB
 	vecs     *os.File
 	mu       sync.Mutex
-	vecCache *lruCache          // Cache RAM LRU borné : clé = chunk.ID
+	vecCache *lruCache           // Cache RAM LRU borné : clé = chunk.ID
 	hnswIdx  *hnsw.Graph[string] // Index ANN : O(log n) au lieu de O(n)
 	hnswPath string              // Chemin de persistance hnsw.bin
 	// Paramètres RRF/reranker issus de config.yaml
@@ -49,6 +49,8 @@ type Store struct {
 	rerankPool        int  // nb de candidats envoyés au reranker — depuis config.yaml
 	hnswThreshold     int  // full scan si len(vecCache) < seuil, HNSW sinon
 	hnswDirty         bool // true si l'index HNSW a été modifié depuis le dernier saveHNSW
+	searchRules       config.SearchRules
+	stopWordsMap      map[string]bool
 }
 
 // StoreConfig regroupe les paramètres injectés depuis config.yaml
@@ -61,6 +63,7 @@ type StoreConfig struct {
 	RerankPool        int // Nb de candidats envoyés au cross-encoder (défaut 6)
 	HNSWThreshold     int // Full scan si nb chunks < seuil, HNSW sinon
 	VecCacheSize      int // Capacité max du cache LRU (0 = illimité)
+	SearchRules       config.SearchRules
 }
 
 func New(base string, cfg StoreConfig) (*Store, error) {
@@ -119,6 +122,12 @@ func New(base string, cfg StoreConfig) (*Store, error) {
 		rerankerURL:       cfg.RerankerURL,
 		rerankPool:        cfg.RerankPool,
 		hnswThreshold:     cfg.HNSWThreshold,
+		searchRules:       cfg.SearchRules,
+		stopWordsMap:      make(map[string]bool),
+	}
+
+	for _, w := range cfg.SearchRules.StopWords {
+		s.stopWordsMap[w] = true
 	}
 
 	// --- Chargement des vecteurs en RAM ---
@@ -332,7 +341,7 @@ func (s *Store) SearchSmart(query string, queryVec []float32, k int) ([]Chunk, e
 	// spécifiques (registres, acronymes, sigles), on booste fortement le FTS
 	// car bge-m3 a un gap sémantique avec le contenu technique anglais/tabulaire
 	ftsWeight := s.ftsWeight
-	if isTechnicalQuery(query) {
+	if s.isTechnicalQuery(query) {
 		ftsWeight = s.ftsTechWeight // FTS dominante sur les questions registres/acronymes
 	}
 
@@ -574,21 +583,6 @@ func (s *Store) fullTextSearch(query string, k int) ([]Chunk, error) {
 		}
 	}
 
-	frenchStopWords := map[string]bool{
-		"comment": true, "fonctionne": true, "fonctionner": true,
-		"quels": true, "quelle": true, "quelles": true, "quel": true,
-		"quand": true, "pourquoi": true, "expliquer": true, "expliquez": true,
-		"utiliser": true, "utilise": true, "donner": true, "faire": true,
-		"avec": true, "dans": true, "pour": true, "vers": true,
-		"depuis": true, "entre": true, "comme": true, "plus": true,
-		"moins": true, "bien": true, "tout": true, "cette": true,
-		"sont": true, "mais": true, "donc": true, "aussi": true,
-		"même": true, "leur": true, "quoi": true, "être": true,
-		"est": true, "les": true, "des": true, "une": true,
-		"qui": true, "que": true, "sur": true, "par": true,
-		"aux": true, "the": true, "and": true, "for": true,
-	}
-
 	var techWords []string
 	var validWords []string
 
@@ -600,7 +594,7 @@ func (s *Store) fullTextSearch(query string, k int) ([]Chunk, error) {
 		if len([]rune(clean)) <= 3 {
 			continue
 		}
-		if frenchStopWords[lower] {
+		if s.stopWordsMap[lower] {
 			continue
 		}
 
@@ -737,16 +731,21 @@ func (s *Store) Count() int {
 
 // isTechnicalQuery détecte si la query contient des termes techniques
 // qui nécessitent un boost FTS (acronymes, noms de registres, termes électronique)
-func isTechnicalQuery(q string) bool {
+func (s *Store) isTechnicalQuery(q string) bool {
 	lower := strings.ToLower(q)
-	technicalTerms := []string{
-		"adcs", "admux", "tccr", "timsk", "portb", "ddrb", "ddrd",
-		"prescaler", "registre", "register", "bit ", "0x", "pwm",
-		"uart", "spi", "i2c", "twi", "isr", "int0", "int1",
-		"adps", "aden", "adsc", "adie", "adif", "refs",
-		"wgm", "com", "ocr", "icr", "tcnt",
-		"vlan", "trunk", "switchport", "802.1x", "ddos", "slowloris", "radius",
+	technicalTerms := s.searchRules.TechnicalTerms
+	if len(technicalTerms) == 0 {
+		// Fallback si la config est vide (ne devrait pas arriver avec defaults())
+		technicalTerms = []string{
+			"adcs", "admux", "tccr", "timsk", "portb", "ddrb", "ddrd",
+			"prescaler", "registre", "register", "bit ", "0x", "pwm",
+			"uart", "spi", "i2c", "twi", "isr", "int0", "int1",
+			"adps", "aden", "adsc", "adie", "adif", "refs",
+			"wgm", "com", "ocr", "icr", "tcnt",
+			"vlan", "trunk", "switchport", "802.1x", "ddos", "slowloris", "radius",
+		}
 	}
+
 	for _, term := range technicalTerms {
 		if strings.Contains(lower, term) {
 			return true
