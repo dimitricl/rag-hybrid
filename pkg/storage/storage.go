@@ -387,7 +387,7 @@ func (s *Store) SearchSmart(query string, queryVec []float32, k int) ([]Chunk, e
 			// on pénalise le score final pour éviter les faux positifs.
 			absScale := float32(1.0)
 			if best < -2.0 {
-				absScale = 0.5
+				absScale = 0.1 // Malus strict pour les questions hors corpus
 			}
 
 			for i := range reranked {

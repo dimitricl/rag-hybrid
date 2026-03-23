@@ -299,7 +299,7 @@ RÈGLES STRICTES :
 SOURCES :
 %s
 
-QUESTION : %s
+DEMANDE : %s
 
 ⚠️ INSTRUCTION FINALE : Analyse attentivement les sources. Si elles couvrent le sujet (même partiellement ou via des termes connexes), synthétise une réponse précise. Cite systématiquement tes sources au format [Source N]. Ne refuse de répondre que si les sources sont totalement muettes sur le sujet.
 
