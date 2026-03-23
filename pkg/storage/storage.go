@@ -376,14 +376,25 @@ func (s *Store) SearchSmart(query string, queryVec []float32, k int) ([]Chunk, e
 
 	if reranked, err := s.rerankChunks(query, top); err == nil {
 		if len(reranked) > 0 {
+			// Normalisation min-max des scores du re-ranker (Cross-Encoder)
+			// On utilise une approche qui préserve la notion de pertinence absolue :
+			// si le meilleur score est trop bas, on ne sature pas à 1.0.
 			best := reranked[0].Score
 			worst := reranked[len(reranked)-1].Score
 			span := best - worst
+
+			// Seuil empirique : si le meilleur score Cross-Encoder est < -2 (très faible)
+			// on pénalise le score final pour éviter les faux positifs.
+			absScale := float32(1.0)
+			if best < -2.0 {
+				absScale = 0.5
+			}
+
 			for i := range reranked {
-				if span > 0 {
-					reranked[i].Score = (reranked[i].Score - worst) / span
+				if span > 0.0001 {
+					reranked[i].Score = ((reranked[i].Score - worst) / span) * absScale
 				} else {
-					reranked[i].Score = 1.0
+					reranked[i].Score = 0.5 * absScale
 				}
 			}
 			if len(reranked) > k {
@@ -734,6 +745,7 @@ func isTechnicalQuery(q string) bool {
 		"uart", "spi", "i2c", "twi", "isr", "int0", "int1",
 		"adps", "aden", "adsc", "adie", "adif", "refs",
 		"wgm", "com", "ocr", "icr", "tcnt",
+		"vlan", "trunk", "switchport", "802.1x", "ddos", "slowloris", "radius",
 	}
 	for _, term := range technicalTerms {
 		if strings.Contains(lower, term) {

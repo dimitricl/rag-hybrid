@@ -119,7 +119,8 @@ func ClassifyQuestion(q string) QuestionType {
 	calcKW := []string{
 		"calcul", "calculer", "formule", "valeur", "fréquence", "tension",
 		"résistance", "courant", "ohm", "volt", "hz", "mhz", "prescaler",
-		"diviseur", "combien", "quelle valeur",
+		"diviseur", "combien", "quelle valeur", "résolution", "échantillonnage",
+		"quantum", "can ", "adc ",
 	}
 	for _, kw := range calcKW {
 		if strings.Contains(lower, kw) {
@@ -131,6 +132,7 @@ func ClassifyQuestion(q string) QuestionType {
 	conceptKW := []string{
 		"comment fonctionne", "qu'est-ce", "expliquer", "définir",
 		"principe", "différence entre", "pourquoi", "quand utiliser",
+		"refs", "adlar", "mux", "tension de référence",
 	}
 	for _, kw := range conceptKW {
 		if strings.Contains(lower, kw) {
@@ -268,26 +270,26 @@ func buildPrompt(ctxStr, q, model string, chunks []storage.Chunk) string {
 		platformLine = "\nCONTRAINTE DE PLATEFORME : " + platformHint
 	}
 
-	systemPrompt := `Tu es un robot d'extraction strict pour BTS CIEL. Tu n'es PAS un professeur.
-RÈGLE ABSOLUE 1 : Tu lis les sources fournies.
-RÈGLE ABSOLUE 2 : Si la question associe des concepts qui ne sont pas explicitement liés dans les sources pour accomplir la tâche, tu DOIS répondre EXACTEMENT et UNIQUEMENT : "Désolé, cette opération n'est pas décrite dans le cours."
-RÈGLE ABSOLUE 3 : AUCUNE connaissance externe. AUCUNE déduction. AUCUNE adaptation de méthodologie.
+	systemPrompt := `Tu es un assistant technique expert pour le BTS CIEL. Ton rôle est d'extraire et de synthétiser des informations à partir des sources fournies.
 
-EXEMPLE DE COMPORTEMENT ATTENDU :
-Question: Comment utiliser le port USB pour mesurer la vitesse du vent ?
-Ta Réponse: Désolé, cette opération n'est pas décrite dans le cours.`
+RÈGLES STRICTES :
+1. RÉPONSE BASÉE SUR LES SOURCES : Ta réponse doit s'appuyer exclusivement sur les sources fournies ci-dessous.
+2. SYNTHÈSE AUTORISÉE : Tu peux (et dois) synthétiser les informations si elles sont présentes dans plusieurs sources pour répondre de manière complète.
+3. CITATIONS : Tu DOIS citer tes sources à la fin de chaque phrase ou paragraphe pertinent en utilisant le format [Source N] (ex: [Source 1]).
+4. ABSENCE D'INFORMATION : Si les sources ne contiennent pas l'information demandée, réponds exactement : "Désolé, cette opération n'est pas décrite dans le cours."
+5. AUCUNE CONNAISSANCE EXTERNE : Ne complète pas les manques avec tes propres connaissances.`
 
 	var specificPrompt string
 
 	switch qt {
 	case QtRegister:
-		specificPrompt = "Format attendu : Analyse des registres. Pour chaque bit, donne le nom exact et la description depuis la source. Cite le fichier. Si un bit manque : 'non documenté'."
+		specificPrompt = "INSTRUCTIONS REGISTRES : Liste les bits, donne leur nom exact et leur description. Cite la source pour chaque registre. Si un bit est mentionné mais non décrit : 'non documenté'."
 	case QtCode:
-		specificPrompt = fmt.Sprintf("Format attendu : Programmation.%s\nFournis des explications ou du code basés UNIQUEMENT sur les sources. Ne comble pas les trous avec tes connaissances.", platformLine)
+		specificPrompt = fmt.Sprintf("INSTRUCTIONS PROGRAMMATION : %s\nFournis des explications ou du code basés sur les sources. Structure clairement ton code.", platformLine)
 	case QtCalculation:
-		specificPrompt = "Format attendu : Calcul étape par étape. Utilise UNIQUEMENT les formules et valeurs des sources. Vérifie les unités."
+		specificPrompt = "INSTRUCTIONS CALCUL : Détaille chaque étape du calcul. Utilise exclusivement les formules et valeurs présentes dans les sources. Précise les unités."
 	default:
-		specificPrompt = "Format attendu : Réponse textuelle structurée basée UNIQUEMENT sur les sources. Cite les fichiers."
+		specificPrompt = "INSTRUCTIONS : Fournis une réponse structurée et synthétique basée sur les sources."
 	}
 
 	return fmt.Sprintf(`%s
@@ -299,7 +301,7 @@ SOURCES :
 
 QUESTION : %s
 
-⚠️ INSTRUCTION FINALE : Tu dois répondre en te basant sur les sources fournies. Si les sources couvrent le sujet de la question (même avec des termes différents ou connexes), synthétise une réponse à partir de leur contenu. N'écris "Désolé, cette opération n'est pas décrite dans le cours." UNIQUEMENT si les sources ne contiennent vraiment aucune information pertinente pour répondre à la question (ex: ADC + Infrarouge ensemble, TensorFlow sur ATmega).
+⚠️ INSTRUCTION FINALE : Analyse attentivement les sources. Si elles couvrent le sujet (même partiellement ou via des termes connexes), synthétise une réponse précise. Cite systématiquement tes sources au format [Source N]. Ne refuse de répondre que si les sources sont totalement muettes sur le sujet.
 
 RÉPONSE :`, systemPrompt, specificPrompt, ctxStr, q)
 }
