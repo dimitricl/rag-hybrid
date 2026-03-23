@@ -14,6 +14,8 @@ rag:
   embed_model: "nomic-embed-text:latest"
   default_model: "qwen2.5:7b"
   rerank_pool: 6
+  # Nombre de chunks finaux envoyés au LLM comme contexte
+  context_chunks: 3
   min_score: 0.30
   chunk_size: 1500
   chunk_overlap: 150
@@ -30,3 +32,43 @@ rag:
   # Capacité max du cache LRU vecteurs en RAM (0 = illimité)
   # 10000 chunks × 768 dims × 4 bytes ≈ 30 MB
   vec_cache_size: 10000
+  max_chunks_per_file: 50
+  # Fichiers "core" qui ignorent la limite max_chunks_per_file
+  # (sous-chaînes du nom de fichier en minuscules)
+  core_file_patterns:
+    - "atmega328p_datasheet"
+    - "convertisseur"
+    - "timer"
+    - "communication"
+    - "ddos"
+    - "slowloris"
+  # Répertoires ignorés lors du scan (noms exacts)
+  ignored_dirs:
+    - "IRMP-master"
+    - "IrEmetteur"
+    - "IrEmetteurMotif"
+    - "IrReceiver"
+    - "Projet_no_cat"
+    - "ProgrammesLoRa"
+    - "secretcode"
+    - "node_modules"
+    - "__pycache__"
+    - "Visual pardigm projet"
+  # Sous-chaînes de noms de fichiers à ignorer lors du scan
+  ignored_file_patterns:
+    - "datasheet TMP35"
+    - "DS18B20"
+    - "TSOP312"
+    - "SS49E"
+    - "3141"
+    - "DHT12"
+    - "SS49e"
+    - "TL1838"
+    - "datasheet LDR"
+    - "datasheet NTC"
+    - "NTC MF52"
+    - "5 mm Round White LED"
+    - "presentation_Modèle_expo"
+    - "Claverie_Dimitri_Rapport"
+    - "TP_Sprint"
+    - "TP-Sprint"

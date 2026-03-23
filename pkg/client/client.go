@@ -10,15 +10,25 @@ import (
 )
 
 type Client struct {
-	BaseURL string
-	HTTP    *http.Client
+	BaseURL    string
+	HTTP       *http.Client
+	NumPredict int // 0 = valeur par défaut (1024)
 }
 
 func New(host string, port int) *Client {
 	return &Client{
-		BaseURL: fmt.Sprintf("http://%s:%d", host, port),
-		HTTP:    &http.Client{Timeout: 120 * time.Second},
+		BaseURL:    fmt.Sprintf("http://%s:%d", host, port),
+		HTTP:       &http.Client{Timeout: 120 * time.Second},
+		NumPredict: 1024,
 	}
+}
+
+// WithNumPredict retourne une copie du client avec une limite de tokens différente.
+// Utile pour les tests automatisés (valeur réduite = réponses plus courtes).
+func (c *Client) WithNumPredict(n int) *Client {
+	copy := *c
+	copy.NumPredict = n
+	return &copy
 }
 
 func (c *Client) Embed(texts []string, model string) ([][]float32, error) {
@@ -50,7 +60,7 @@ func (c *Client) Generate(prompt, model string) (string, error) {
 		"prompt": prompt,
 		"stream": false,
 		"options": map[string]interface{}{
-			"num_predict":    1024,
+			"num_predict":    c.NumPredict,
 			"stop":           []string{"Utilisateur:", "User:", "QUESTION :"},
 			"temperature":    0.1,
 			"repeat_penalty": 1.5,
@@ -90,7 +100,7 @@ func (c *Client) GenerateStream(ctx context.Context, prompt, model string) (<-ch
 		"prompt": prompt,
 		"stream": true,
 		"options": map[string]interface{}{
-			"num_predict": 1024,  // Limite max tokens — empêche les boucles infinies
+			"num_predict": c.NumPredict, // Limite max tokens — empêche les boucles infinies
 			"stop":        []string{"Utilisateur:", "User:", "QUESTION :", "\n\nUtilisateur", "\n\nUser"},
 			"temperature": 0.1,  // Faible température = moins d'hallucinations/répétitions
 			"repeat_penalty": 1.5,

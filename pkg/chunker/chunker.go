@@ -50,56 +50,22 @@ var ignoredExts = map[string]bool{
 	".bat": true, ".sh": true, // scripts de build — peu de valeur cours
 }
 
-var ignoredDirs = map[string]bool{
-	"IRMP-master":            true,
-	"IrEmetteur":             true,
-	"IrEmetteurMotif":        true,
-	"IrReceiver":             true,
-	"Projet_no_cat":          true,
-	"ProgrammesLoRa":         true,
-	"secretcode":             true,
-	"results_20260103_173142": true,
-	"results_20260103_174118": true,
-	"results_20260103_174559": true,
-	"results_20260103_175414": true,
-	"results_20260103_175822": true,
-	"node_modules":           true,
-	"__pycache__":            true,
-	".git":                   true,
-	"Visual pardigm projet":  true,
+// ignoredDirsDefault : répertoires toujours ignorés quel que soit le corpus
+var ignoredDirsDefault = map[string]bool{
+	"node_modules": true,
+	"__pycache__":  true,
+	".git":         true,
 }
 
-var ignoredFilenames = map[string]bool{
-	"LICENSE.txt":  true,
-	"LICENSE":      true,
-	"CHANGELOG.md": true,
-	"Makefile":     true,
-	"Doxyfile":     true,
-	"site.docx":    true,
-	"make.bat":     true,
-	"Dockerfile":   true,
-	"datasheet TMP35_36_37.pdf":                       true,
-	"DS18B20 Datasheet .pdf":                          true,
-	"DS18B20.pdf":                                     true,
-	"TSOP312 Infrared Receiver datasheet.pdf":         true,
-	"SS49E Linear Hall-effect Sensor.pdf":             true,
-	"3141 Ö 3144 HALL-EFFECT SWITCHES Datasheet .pdf": true,
-	"DHT12 datasheet.pdf":                             true,
-	"SS49e_Hall_Sensor_Datasheet.pdf":                 true,
-	"TL1838 Infrared Receiver datasheet.pdf":          true,
-	"datasheet LDR GL5528.pdf":                        true,
-	"datasheet NTC MF52.pdf":                          true,
-	"NTC MF52 datasheet.pdf":                          true,
-	"5 mm Round White LED.pdf":                        true,
-	"presentation_Modèle_expo.md":                     true,
-	// Rapports personnels — contenu hors cours BTS
-	"Claverie_Dimitri_Rapport_de_stage_2026.pdf":      true,
-	// Mini-projets BTS — contenu hors sujet technique
-	"TP_Sprint2.pdf":                                  true,
-	"TP-Sprint1-Pilotage simple.pdf":                  true,
-	"TP-Sprint3.pdf":                                  true,
-	// Source parasite — GPIO générique qui noie les questions ADC/registres
-	"Microcontrôleur 2-GPIO Les ports parallèles.pdf": true,
+// matchesAny retourne true si s contient l'une des sous-chaînes de patterns (insensible à la casse).
+func matchesAny(s string, patterns []string) bool {
+	lower := strings.ToLower(s)
+	for _, p := range patterns {
+		if strings.Contains(lower, strings.ToLower(p)) {
+			return true
+		}
+	}
+	return false
 }
 
 var extractedExts = map[string]bool{
@@ -141,7 +107,7 @@ func detectDomain(path string) string {
 	}
 }
 
-func ChunkFile(path string, size, overlap int) ([]Chunk, error) {
+func ChunkFile(path string, size, overlap int, ignoredFilePatterns []string) ([]Chunk, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	// Normalise NFC — macOS stocke les noms de fichiers en NFD (e + combining accent)
 	// ce qui casse les LIKE SQLite et la déduplication par filename
@@ -150,7 +116,8 @@ func ChunkFile(path string, size, overlap int) ([]Chunk, error) {
 	if ignoredExts[ext] {
 		return nil, nil
 	}
-	if ignoredFilenames[base] {
+	// Filtre par sous-chaînes de noms — liste issue de config.yaml (ignored_file_patterns)
+	if matchesAny(base, ignoredFilePatterns) {
 		return nil, nil
 	}
 	// Ignorer les fichiers cachés et les fichiers temporaires Word/Excel
@@ -498,7 +465,7 @@ func isBinary(data []byte) bool {
 	return float64(nonPrintable)/float64(len(sample)) > 0.10
 }
 
-func ScanDir(root string) ([]string, error) {
+func ScanDir(root string, ignoredDirsList []string) ([]string, error) {
 	var files []string
 	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info == nil {
@@ -506,7 +473,12 @@ func ScanDir(root string) ([]string, error) {
 		}
 		base := filepath.Base(path)
 		if info.IsDir() {
-			if strings.HasPrefix(base, ".") || ignoredDirs[base] {
+			// Toujours ignorer les dossiers cachés, node_modules, .git, __pycache__
+			if strings.HasPrefix(base, ".") || ignoredDirsDefault[base] {
+				return filepath.SkipDir
+			}
+			// Ignorer les dossiers configurés (correspondance exacte ou sous-chaîne via matchesAny)
+			if matchesAny(base, ignoredDirsList) {
 				return filepath.SkipDir
 			}
 			return nil

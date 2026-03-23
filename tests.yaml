@@ -1,0 +1,126 @@
+# tests.yaml — Cas de test pour le RAG hybride BTS CIEL
+#
+# type:
+#   normal  → PASS si keywords + sources matchent
+#   trap    → PASS si la réponse est un refus (contient un des refusal_patterns)
+#
+# keywords      : au moins 1 doit apparaître dans la réponse (insensible à la casse)
+# sources       : sous-chaîne attendue dans au moins 1 nom de fichier source
+# refusal_patterns : (type: trap) sous-chaînes indiquant un refus correct du RAG
+
+- category: "Registres AVR"
+  type: normal
+  question: "quels sont les bits du registre ADMUX ?"
+  keywords: ["REFS", "ADLAR", "MUX", "tension de référence"]
+  sources: ["ATmega328", "convertisseur", "ADC", "microcontr"]
+
+- category: "Registres AVR"
+  type: normal
+  question: "à quoi sert le bit ADEN dans ADCSRA ?"
+  keywords: ["ADEN", "enable", "activer", "convertisseur", "ADC"]
+  sources: ["ATmega328", "ADC", "convertisseur", "microcontr"]
+
+- category: "Registres AVR"
+  type: normal
+  question: "comment configurer TCCR2A pour du PWM rapide ?"
+  keywords: ["TCCR2A", "WGM", "COM", "fast PWM", "mode"]
+  sources: ["timer", "ATmega328", "PWM", "microcontr"]
+
+- category: "Code AVR"
+  type: normal
+  question: "comment configurer un timer en mode PWM sur ATmega328 ?"
+  keywords: ["TCCR2A", "TCCR2B", "OCR2A", "PWM", "prédivision"]
+  sources: ["timer2pwm", "timer2output", "ATmega328", "timer"]
+
+- category: "Code AVR"
+  type: normal
+  question: "comment lire une valeur analogique sur ATmega328 ?"
+  keywords: ["ADC", "analogique", "conversion", "ADMUX", "analogRead"]
+  sources: ["ADC", "convertisseur", "ATmega328"]
+
+- category: "Code AVR"
+  type: normal
+  question: "comment configurer une interruption externe sur ATmega328 ?"
+  keywords: ["INT0", "INT1", "EICRA", "sei", "ISR", "interruption"]
+  sources: ["ATmega328", "GPIO", "interruption", "microcontr"]
+
+- category: "Réseau"
+  type: normal
+  question: "comment configurer un switch Cisco en mode trunk ?"
+  keywords: ["switchport", "trunk", "VLAN", "configure terminal"]
+  sources: ["packet-tracer", "switch", "cisco", "trunk", "vlan"]
+
+- category: "Réseau"
+  type: normal
+  question: "qu'est-ce que le protocole 802.1X ?"
+  keywords: ["authentification", "port", "RADIUS", "EAP"]
+  sources: ["802.1X", "protocole", "réseau", "authentification"]
+
+- category: "Sécurité"
+  type: normal
+  question: "comment fonctionne une attaque Slowloris ?"
+  keywords: ["connexion", "HTTP", "DoS", "serveur", "lente"]
+  sources: ["Slowloris", "DDoS", "défenses", "attaque"]
+
+- category: "Sécurité"
+  type: normal
+  question: "quelles sont les contremesures contre une attaque DDoS ?"
+  keywords: ["fail2ban", "iptables", "limite", "filtrage", "blocage", "contremesure"]
+  sources: ["DDoS", "défenses", "attaque", "sécurité"]
+
+- category: "Concepts"
+  type: normal
+  question: "comment fonctionne le protocole I2C ?"
+  keywords: ["SDA", "SCL", "maître", "esclave", "adresse"]
+  sources: ["I2C", "série", "protocole", "liaison", "communication"]
+
+- category: "Concepts"
+  type: normal
+  question: "quelle est la différence entre interruption et polling ?"
+  keywords: ["interruption", "polling", "attente", "CPU"]
+  sources: ["GPIO", "ATmega328", "timer", "interruption", "microcontr"]
+
+- category: "Concepts"
+  type: normal
+  question: "comment fonctionne un convertisseur ADC ?"
+  keywords: ["analogique", "numérique", "résolution", "tension", "échantillonnage"]
+  sources: ["ADC", "convertisseur", "ATmega328", "microcontr"]
+
+- category: "Question naturelle"
+  type: normal
+  question: "c'est quoi la différence entre Arduino et ATmega ?"
+  keywords: ["Arduino", "ATmega", "microcontrôleur", "bibliothèque", "registre"]
+  sources: ["ATmega328", "Arduino", "GPIO", "microcontr"]
+
+- category: "Question naturelle"
+  type: normal
+  question: "pourquoi mon PWM ne fonctionne pas ?"
+  keywords: ["TCCR", "OCR", "DDR", "broche", "fréquence", "PWM"]
+  sources: ["timer", "PWM", "ATmega328"]
+
+- category: "Calcul"
+  type: normal
+  question: "comment calculer la fréquence d'un timer ATmega avec prescaler 64 ?"
+  keywords: ["fréquence", "prescaler", "formule", "16MHz", "Hz", "calcul"]
+  sources: ["timer", "ATmega328", "fréquence", "microcontr"]
+
+- category: "Calcul"
+  type: normal
+  question: "quelle est la résolution d'un ADC 10 bits avec Vref 5V ?"
+  keywords: ["résolution", "10 bits", "5V", "mV", "1024", "4.88"]
+  sources: ["ADC", "convertisseur", "ATmega328"]
+
+- category: "Piège"
+  type: trap
+  question: "comment configurer l'ADC pour émettre une trame infrarouge ?"
+  refusal_patterns: ["pas décrit", "non documenté", "désolé", "ne figure pas", "hors corpus", "not described"]
+
+- category: "Piège"
+  type: trap
+  question: "comment utiliser le protocole 802.1X pour faire du PWM ?"
+  refusal_patterns: ["pas décrit", "non documenté", "désolé", "ne figure pas", "hors corpus", "not described"]
+
+- category: "Piège"
+  type: trap
+  question: "comment programmer une IA avec TensorFlow sur ATmega ?"
+  refusal_patterns: ["pas décrit", "non documenté", "désolé", "ne figure pas", "hors corpus", "not described"]

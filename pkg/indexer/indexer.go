@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"strings"
 	"fmt"
 	"sync"
 
@@ -42,12 +43,27 @@ func NewWithConfig(c *client.Client, s *storage.Store, cfg config.RAGConfig) *In
 
 func (idx *Indexer) Index(dir string) error {
 	fmt.Println("🔍 Scanning...")
-	files, _ := chunker.ScanDir(dir)
+	files, _ := chunker.ScanDir(dir, idx.cfg.IgnoredDirs)
 	fmt.Printf("📂 %d files\n", len(files))
 
 	var all []chunker.Chunk
 	for _, f := range files {
-		c, _ := chunker.ChunkFile(f, idx.cfg.ChunkSize, idx.cfg.ChunkOverlap)
+		c, _ := chunker.ChunkFile(f, idx.cfg.ChunkSize, idx.cfg.ChunkOverlap, idx.cfg.IgnoredFilePatterns)
+		// Limite le nombre de chunks par fichier pour éviter qu'un gros document
+		// noie les petits fichiers dans le RRF (anssi=348, doxygen=119...)
+		if max := idx.cfg.MaxChunksPerFile; max > 0 && len(c) > max {
+			lower := strings.ToLower(f)
+			isCore := false
+			for _, pattern := range idx.cfg.CoreFilePatterns {
+				if strings.Contains(lower, strings.ToLower(pattern)) {
+					isCore = true
+					break
+				}
+			}
+			if !isCore {
+				c = c[:max]
+			}
+		}
 		all = append(all, c...)
 	}
 	fmt.Printf("✂️  %d chunks\n", len(all))

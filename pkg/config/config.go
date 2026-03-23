@@ -24,19 +24,24 @@ type WebConfig struct {
 }
 
 type RAGConfig struct {
-	DBPath             string  `yaml:"db_path"`
-	EmbedModel         string  `yaml:"embed_model"`
-	DefaultModel       string  `yaml:"default_model"`
-	RerankPool         int     `yaml:"rerank_pool"`          // Nombre de chunks envoyés au reranker
-	ChunkSize          int     `yaml:"chunk_size"`           // Taille des chunks en runes (défaut 1500)
-	ChunkOverlap       int     `yaml:"chunk_overlap"`        // Overlap entre chunks en runes (défaut 150)
-	MinScore           float32 `yaml:"min_score"`            // Seuil de score pour inclusion dans le contexte
-	RRFConstant        float32 `yaml:"rrf_constant"`         // Constante RRF (défaut 60.0)
-	FTSWeight          float32 `yaml:"fts_weight"`           // Poids FTS pour queries normales (défaut 2.0)
-	FTSTechWeight      float32 `yaml:"fts_tech_weight"`      // Poids FTS pour queries techniques (défaut 5.0)
-	RerankerTimeoutMs  int     `yaml:"reranker_timeout_ms"`  // Timeout HTTP vers reranker en ms (défaut 500)
-	HNSWThreshold      int     `yaml:"hnsw_threshold"`       // Nb de chunks au-dessus duquel HNSW remplace le full scan (défaut 2000)
-	VecCacheSize       int     `yaml:"vec_cache_size"`       // Capacité max du cache LRU vecteurs (0 = illimité, défaut 10000)
+	DBPath               string   `yaml:"db_path"`
+	EmbedModel           string   `yaml:"embed_model"`
+	DefaultModel         string   `yaml:"default_model"`
+	RerankPool           int      `yaml:"rerank_pool"`           // Nombre de chunks envoyés au reranker
+	ContextChunks        int      `yaml:"context_chunks"`        // Nombre de chunks finaux envoyés au LLM (défaut 3)
+	ChunkSize            int      `yaml:"chunk_size"`            // Taille des chunks en runes (défaut 1500)
+	ChunkOverlap         int      `yaml:"chunk_overlap"`         // Overlap entre chunks en runes (défaut 150)
+	MaxChunksPerFile     int      `yaml:"max_chunks_per_file"`   // Limite chunks par fichier (0=illimité, défaut 50)
+	MinScore             float32  `yaml:"min_score"`             // Seuil de score pour inclusion dans le contexte
+	RRFConstant          float32  `yaml:"rrf_constant"`          // Constante RRF (défaut 60.0)
+	FTSWeight            float32  `yaml:"fts_weight"`            // Poids FTS pour queries normales (défaut 2.0)
+	FTSTechWeight        float32  `yaml:"fts_tech_weight"`       // Poids FTS pour queries techniques (défaut 5.0)
+	RerankerTimeoutMs    int      `yaml:"reranker_timeout_ms"`   // Timeout HTTP vers reranker en ms (défaut 500)
+	HNSWThreshold        int      `yaml:"hnsw_threshold"`        // Nb de chunks au-dessus duquel HNSW remplace le full scan (défaut 2000)
+	VecCacheSize         int      `yaml:"vec_cache_size"`        // Capacité max du cache LRU vecteurs (0 = illimité, défaut 10000)
+	CoreFilePatterns     []string `yaml:"core_file_patterns"`    // Fichiers ignorant la limite max_chunks_per_file
+	IgnoredDirs          []string `yaml:"ignored_dirs"`          // Répertoires ignorés au scan
+	IgnoredFilePatterns  []string `yaml:"ignored_file_patterns"` // Sous-chaînes de noms de fichiers à ignorer
 }
 
 type Config struct {
@@ -57,8 +62,10 @@ func defaults() Config {
 			EmbedModel:        "nomic-embed-text:latest",
 			DefaultModel:      "mistral:7b-instruct",
 			RerankPool:        6,
+			ContextChunks:     3,
 			ChunkSize:         1500,
 			ChunkOverlap:      150,
+			MaxChunksPerFile:  50,
 			MinScore:          0.30,
 			RRFConstant:       60.0,
 			FTSWeight:         2.0,
@@ -66,6 +73,9 @@ func defaults() Config {
 			RerankerTimeoutMs: 500,
 			HNSWThreshold:     2000,
 			VecCacheSize:      10000,
+			CoreFilePatterns:  []string{},
+			IgnoredDirs:       []string{"node_modules", "__pycache__", ".git"},
+			IgnoredFilePatterns: []string{},
 		},
 	}
 }
@@ -104,8 +114,10 @@ func Load() Config {
 		if cfg.RAG.EmbedModel == "" { cfg.RAG.EmbedModel = defaults().RAG.EmbedModel }
 		if cfg.RAG.DefaultModel == "" { cfg.RAG.DefaultModel = defaults().RAG.DefaultModel }
 		if cfg.RAG.RerankPool == 0  { cfg.RAG.RerankPool = defaults().RAG.RerankPool }
+		if cfg.RAG.ContextChunks == 0 { cfg.RAG.ContextChunks = defaults().RAG.ContextChunks }
 		if cfg.RAG.ChunkSize == 0   { cfg.RAG.ChunkSize = defaults().RAG.ChunkSize }
 		if cfg.RAG.ChunkOverlap == 0 { cfg.RAG.ChunkOverlap = defaults().RAG.ChunkOverlap }
+		if cfg.RAG.MaxChunksPerFile == 0 { cfg.RAG.MaxChunksPerFile = defaults().RAG.MaxChunksPerFile }
 		// MinScore à 0 est une valeur intentionnellement valide (tout passe),
 		// on applique le défaut seulement si négatif (valeur aberrante)
 		if cfg.RAG.MinScore < 0     { cfg.RAG.MinScore = defaults().RAG.MinScore }

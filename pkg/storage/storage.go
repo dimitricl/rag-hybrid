@@ -46,7 +46,8 @@ type Store struct {
 	ftsTechWeight     float32
 	rerankerTimeoutMs int
 	rerankerURL       string
-	hnswThreshold     int // full scan si len(vecCache) < seuil, HNSW sinon
+	rerankPool        int  // nb de candidats envoyés au reranker — depuis config.yaml
+	hnswThreshold     int  // full scan si len(vecCache) < seuil, HNSW sinon
 	hnswDirty         bool // true si l'index HNSW a été modifié depuis le dernier saveHNSW
 }
 
@@ -57,6 +58,7 @@ type StoreConfig struct {
 	FTSTechWeight     float32
 	RerankerTimeoutMs int
 	RerankerURL       string
+	RerankPool        int // Nb de candidats envoyés au cross-encoder (défaut 6)
 	HNSWThreshold     int // Full scan si nb chunks < seuil, HNSW sinon
 	VecCacheSize      int // Capacité max du cache LRU (0 = illimité)
 }
@@ -115,6 +117,7 @@ func New(base string, cfg StoreConfig) (*Store, error) {
 		ftsTechWeight:     cfg.FTSTechWeight,
 		rerankerTimeoutMs: cfg.RerankerTimeoutMs,
 		rerankerURL:       cfg.RerankerURL,
+		rerankPool:        cfg.RerankPool,
 		hnswThreshold:     cfg.HNSWThreshold,
 	}
 
@@ -362,7 +365,10 @@ func (s *Store) SearchSmart(query string, queryVec []float32, k int) ([]Chunk, e
 		return candidates[i].Score > candidates[j].Score
 	})
 
-	rerankPool := 6
+	rerankPool := s.rerankPool
+	if rerankPool <= 0 {
+		rerankPool = 6 // fallback si mal initialisé
+	}
 	if len(candidates) < rerankPool {
 		rerankPool = len(candidates)
 	}

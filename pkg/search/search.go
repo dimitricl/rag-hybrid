@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"rag-hybrid/pkg/client"
+	"rag-hybrid/pkg/config"
 	"rag-hybrid/pkg/storage"
 )
 
@@ -23,17 +24,18 @@ const (
 )
 
 type Engine struct {
-	client     *client.Client
-	store      *storage.Store
-	embedModel string
-	minScore   float32 // seuil de cohérence sémantique — depuis config.yaml (min_score)
+	client        *client.Client
+	store         *storage.Store
+	embedModel    string
+	minScore      float32 // seuil de cohérence sémantique — depuis config.yaml (min_score)
+	contextChunks int     // nb de chunks envoyés au LLM — depuis config.yaml (context_chunks)
 }
 
 func New(c *client.Client, s *storage.Store, embedModel string) *Engine {
 	if embedModel == "" {
 		embedModel = "nomic-embed-text:latest"
 	}
-	return &Engine{client: c, store: s, embedModel: embedModel, minScore: 0.30}
+	return &Engine{client: c, store: s, embedModel: embedModel, minScore: 0.30, contextChunks: 3}
 }
 
 // NewWithMinScore crée un Engine avec le seuil de cohérence issu de config.yaml.
@@ -41,6 +43,18 @@ func NewWithMinScore(c *client.Client, s *storage.Store, embedModel string, minS
 	e := New(c, s, embedModel)
 	if minScore > 0 {
 		e.minScore = minScore
+	}
+	return e
+}
+
+// NewWithConfig crée un Engine avec tous les paramètres issus de config.yaml.
+func NewWithConfig(c *client.Client, s *storage.Store, cfg config.RAGConfig) *Engine {
+	e := New(c, s, cfg.EmbedModel)
+	if cfg.MinScore > 0 {
+		e.minScore = cfg.MinScore
+	}
+	if cfg.ContextChunks > 0 {
+		e.contextChunks = cfg.ContextChunks
 	}
 	return e
 }
@@ -295,7 +309,7 @@ func (e *Engine) Ask(q string) (string, error) {
 }
 
 func (e *Engine) AskWithModel(q, model string) (string, error) {
-	res, err := e.Search(q, 3)
+	res, err := e.Search(q, e.contextChunks)
 	if err != nil {
 		return "", err
 	}
@@ -314,7 +328,7 @@ func (e *Engine) AskStream(q string) (<-chan string, error) {
 }
 
 func (e *Engine) AskStreamWithModel(ctx context.Context, q, model string) (<-chan string, error) {
-	res, err := e.Search(q, 3)
+	res, err := e.Search(q, e.contextChunks)
 	if err != nil {
 		return nil, err
 	}
