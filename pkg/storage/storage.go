@@ -44,6 +44,7 @@ type Store struct {
 	rrfConstant       float32
 	ftsWeight         float32
 	ftsTechWeight     float32
+	rerankPool        int // Nombre de chunks envoyés au reranker
 	rerankerTimeoutMs int
 	rerankerURL       string
 	hnswThreshold     int // full scan si len(vecCache) < seuil, HNSW sinon
@@ -55,6 +56,7 @@ type StoreConfig struct {
 	RRFConstant       float32
 	FTSWeight         float32
 	FTSTechWeight     float32
+	RerankPool        int // Nombre de chunks envoyés au reranker (défaut 6)
 	RerankerTimeoutMs int
 	RerankerURL       string
 	HNSWThreshold     int // Full scan si nb chunks < seuil, HNSW sinon
@@ -113,6 +115,7 @@ func New(base string, cfg StoreConfig) (*Store, error) {
 		rrfConstant:       cfg.RRFConstant,
 		ftsWeight:         cfg.FTSWeight,
 		ftsTechWeight:     cfg.FTSTechWeight,
+		rerankPool:        cfg.RerankPool,
 		rerankerTimeoutMs: cfg.RerankerTimeoutMs,
 		rerankerURL:       cfg.RerankerURL,
 		hnswThreshold:     cfg.HNSWThreshold,
@@ -362,7 +365,10 @@ func (s *Store) SearchSmart(query string, queryVec []float32, k int) ([]Chunk, e
 		return candidates[i].Score > candidates[j].Score
 	})
 
-	rerankPool := 6
+	rerankPool := s.rerankPool
+	if rerankPool <= 0 {
+		rerankPool = 6 // valeur de sécurité si StoreConfig mal initialisé
+	}
 	if len(candidates) < rerankPool {
 		rerankPool = len(candidates)
 	}

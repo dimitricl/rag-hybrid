@@ -12,16 +12,44 @@ import (
 type Client struct {
 	BaseURL string
 	HTTP    *http.Client
+	NumCtx  int // Taille de la fenêtre de contexte Ollama en tokens (0 = défaut du modèle)
 }
 
 func New(host string, port int) *Client {
 	return &Client{
 		BaseURL: fmt.Sprintf("http://%s:%d", host, port),
 		HTTP:    &http.Client{Timeout: 120 * time.Second},
+		NumCtx:  4096,
 	}
 }
 
+// NewWithNumCtx crée un client avec une fenêtre de contexte configurable.
+func NewWithNumCtx(host string, port int, numCtx int) *Client {
+	c := New(host, port)
+	if numCtx > 0 {
+		c.NumCtx = numCtx
+	}
+	return c
+}
+
 func (c *Client) Embed(texts []string, model string) ([][]float32, error) {
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			// Backoff exponentiel : 2s, 4s
+			time.Sleep(time.Duration(1<<uint(attempt)) * time.Second)
+		}
+		result, err := c.embed(texts, model)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+func (c *Client) embed(texts []string, model string) ([][]float32, error) {
 	req := map[string]interface{}{"model": model, "input": texts}
 	data, err := json.Marshal(req)
 	if err != nil {
@@ -51,6 +79,7 @@ func (c *Client) Generate(prompt, model string) (string, error) {
 		"stream": false,
 		"options": map[string]interface{}{
 			"num_predict":    1024,
+			"num_ctx":        c.NumCtx,
 			"stop":           []string{"Utilisateur:", "User:", "QUESTION :"},
 			"temperature":    0.1,
 			"repeat_penalty": 1.5,
@@ -91,6 +120,7 @@ func (c *Client) GenerateStream(ctx context.Context, prompt, model string) (<-ch
 		"stream": true,
 		"options": map[string]interface{}{
 			"num_predict": 1024,  // Limite max tokens — empêche les boucles infinies
+			"num_ctx":     c.NumCtx,
 			"stop":        []string{"Utilisateur:", "User:", "QUESTION :", "\n\nUtilisateur", "\n\nUser"},
 			"temperature": 0.1,  // Faible température = moins d'hallucinations/répétitions
 			"repeat_penalty": 1.5,

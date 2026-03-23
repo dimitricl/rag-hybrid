@@ -70,9 +70,6 @@ func (idx *Indexer) Index(dir string) error {
 
 	// Buffer de résultats pour reconstruire l'ordre
 	results := make([][][]float32, len(embedBatches))
-	var mu sync.Mutex
-	_ = mu
-
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 30)
 	errs := make([]error, len(embedBatches))

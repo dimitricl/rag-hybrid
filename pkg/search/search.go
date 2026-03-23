@@ -27,13 +27,14 @@ type Engine struct {
 	store      *storage.Store
 	embedModel string
 	minScore   float32 // seuil de cohérence sémantique — depuis config.yaml (min_score)
+	topK       int     // nombre de chunks retournés dans le contexte LLM — depuis config.yaml (top_k)
 }
 
 func New(c *client.Client, s *storage.Store, embedModel string) *Engine {
 	if embedModel == "" {
 		embedModel = "nomic-embed-text:latest"
 	}
-	return &Engine{client: c, store: s, embedModel: embedModel, minScore: 0.30}
+	return &Engine{client: c, store: s, embedModel: embedModel, minScore: 0.30, topK: 3}
 }
 
 // NewWithMinScore crée un Engine avec le seuil de cohérence issu de config.yaml.
@@ -41,6 +42,18 @@ func NewWithMinScore(c *client.Client, s *storage.Store, embedModel string, minS
 	e := New(c, s, embedModel)
 	if minScore > 0 {
 		e.minScore = minScore
+	}
+	return e
+}
+
+// NewWithConfig crée un Engine avec tous les paramètres issus de config.yaml.
+func NewWithConfig(c *client.Client, s *storage.Store, embedModel string, minScore float32, topK int) *Engine {
+	e := New(c, s, embedModel)
+	if minScore > 0 {
+		e.minScore = minScore
+	}
+	if topK > 0 {
+		e.topK = topK
 	}
 	return e
 }
@@ -272,6 +285,8 @@ Ta Réponse: Désolé, cette opération n'est pas décrite dans le cours.`
 		specificPrompt = fmt.Sprintf("Format attendu : Programmation.%s\nFournis des explications ou du code basés UNIQUEMENT sur les sources. Ne comble pas les trous avec tes connaissances.", platformLine)
 	case QtCalculation:
 		specificPrompt = "Format attendu : Calcul étape par étape. Utilise UNIQUEMENT les formules et valeurs des sources. Vérifie les unités."
+	case QtConcept:
+		specificPrompt = "Format attendu : Explication structurée. Commence par une définition courte, puis détaille le fonctionnement et les cas d'usage décrits dans les sources. Cite les fichiers. Ne déduis rien hors des sources."
 	default:
 		specificPrompt = "Format attendu : Réponse textuelle structurée basée UNIQUEMENT sur les sources. Cite les fichiers."
 	}
@@ -295,7 +310,7 @@ func (e *Engine) Ask(q string) (string, error) {
 }
 
 func (e *Engine) AskWithModel(q, model string) (string, error) {
-	res, err := e.Search(q, 3)
+	res, err := e.Search(q, e.topK)
 	if err != nil {
 		return "", err
 	}
@@ -314,7 +329,7 @@ func (e *Engine) AskStream(q string) (<-chan string, error) {
 }
 
 func (e *Engine) AskStreamWithModel(ctx context.Context, q, model string) (<-chan string, error) {
-	res, err := e.Search(q, 3)
+	res, err := e.Search(q, e.topK)
 	if err != nil {
 		return nil, err
 	}

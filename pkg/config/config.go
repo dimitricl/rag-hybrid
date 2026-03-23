@@ -27,7 +27,9 @@ type RAGConfig struct {
 	DBPath             string  `yaml:"db_path"`
 	EmbedModel         string  `yaml:"embed_model"`
 	DefaultModel       string  `yaml:"default_model"`
-	RerankPool         int     `yaml:"rerank_pool"`          // Nombre de chunks envoyés au reranker
+	RerankPool         int     `yaml:"rerank_pool"`          // Nombre de chunks envoyés au reranker (défaut 6)
+	TopK               int     `yaml:"top_k"`                // Nombre de chunks renvoyés dans le contexte LLM (défaut 3)
+	NumCtx             int     `yaml:"num_ctx"`              // Taille de la fenêtre de contexte Ollama en tokens (défaut 4096)
 	ChunkSize          int     `yaml:"chunk_size"`           // Taille des chunks en runes (défaut 1500)
 	ChunkOverlap       int     `yaml:"chunk_overlap"`        // Overlap entre chunks en runes (défaut 150)
 	MinScore           float32 `yaml:"min_score"`            // Seuil de score pour inclusion dans le contexte
@@ -57,6 +59,8 @@ func defaults() Config {
 			EmbedModel:        "nomic-embed-text:latest",
 			DefaultModel:      "mistral:7b-instruct",
 			RerankPool:        6,
+			TopK:              3,
+			NumCtx:            4096,
 			ChunkSize:         1500,
 			ChunkOverlap:      150,
 			MinScore:          0.30,
@@ -104,6 +108,8 @@ func Load() Config {
 		if cfg.RAG.EmbedModel == "" { cfg.RAG.EmbedModel = defaults().RAG.EmbedModel }
 		if cfg.RAG.DefaultModel == "" { cfg.RAG.DefaultModel = defaults().RAG.DefaultModel }
 		if cfg.RAG.RerankPool == 0  { cfg.RAG.RerankPool = defaults().RAG.RerankPool }
+		if cfg.RAG.TopK == 0        { cfg.RAG.TopK = defaults().RAG.TopK }
+		if cfg.RAG.NumCtx == 0      { cfg.RAG.NumCtx = defaults().RAG.NumCtx }
 		if cfg.RAG.ChunkSize == 0   { cfg.RAG.ChunkSize = defaults().RAG.ChunkSize }
 		if cfg.RAG.ChunkOverlap == 0 { cfg.RAG.ChunkOverlap = defaults().RAG.ChunkOverlap }
 		// MinScore à 0 est une valeur intentionnellement valide (tout passe),
