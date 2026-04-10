@@ -1,8 +1,8 @@
 package indexer
 
 import (
-	"strings"
 	"fmt"
+	"strings"
 	"sync"
 
 	"rag-hybrid/pkg/chunker"
@@ -17,7 +17,7 @@ import (
 type Indexer struct {
 	client     *client.Client
 	store      *storage.Store
-	EmbedModel string        // modèle d'embedding — depuis config.yaml
+	EmbedModel string // modèle d'embedding — depuis config.yaml
 	cfg        config.RAGConfig
 }
 
@@ -72,7 +72,7 @@ func (idx *Indexer) Index(dir string) error {
 	// mais les goroutines font 30 appels embed en parallèle
 	// → chaque batch = 32 chunks × 30 goroutines = 960 chunks en vol simultané
 	const embedBatch = 32
-	const sqlBatch   = 500  // InsertBatch par tranche de 500 pour limiter la taille des transactions
+	const sqlBatch = 500 // InsertBatch par tranche de 500 pour limiter la taille des transactions
 
 	// Découpe en sous-batches pour l'embedding
 	type embedResult struct {
@@ -102,7 +102,7 @@ func (idx *Indexer) Index(dir string) error {
 
 			texts := make([]string, len(chunks))
 			for j, c := range chunks {
-					texts[j] = c.Text
+				texts[j] = c.Text
 			}
 			vecs, err := idx.client.Embed(texts, idx.EmbedModel)
 			if err != nil {
@@ -137,10 +137,10 @@ func (idx *Indexer) Index(dir string) error {
 
 	// Reconstruction à plat dans l'ordre
 	var (
-		allIDs      []string
-		allTexts    []string
+		allIDs       []string
+		allTexts     []string
 		allFilenames []string
-		allVecs     [][]float32
+		allVecs      [][]float32
 	)
 	for i, b := range embedBatches {
 		if results[i] == nil {
@@ -150,10 +150,10 @@ func (idx *Indexer) Index(dir string) error {
 			if j >= len(b) {
 				break
 			}
-			allIDs       = append(allIDs, uuid.New().String())
-			allTexts     = append(allTexts, b[j].Text)
+			allIDs = append(allIDs, uuid.New().String())
+			allTexts = append(allTexts, b[j].Text)
 			allFilenames = append(allFilenames, b[j].Filename)
-			allVecs      = append(allVecs, v)
+			allVecs = append(allVecs, v)
 		}
 	}
 

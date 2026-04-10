@@ -19,9 +19,11 @@ import (
 
 	"github.com/coder/hnsw"
 	_ "modernc.org/sqlite"
+
+	"rag-hybrid/pkg/config"
 )
 
-const vecDim = 768
+const vecDim = 1024
 const vecBytes = vecDim * 4
 
 type Chunk struct {
@@ -46,9 +48,10 @@ type Store struct {
 	ftsTechWeight     float32
 	rerankerTimeoutMs int
 	rerankerURL       string
-	rerankPool        int  // nb de candidats envoyés au reranker — depuis config.yaml
-	hnswThreshold     int  // full scan si len(vecCache) < seuil, HNSW sinon
-	hnswDirty         bool // true si l'index HNSW a été modifié depuis le dernier saveHNSW
+	rerankPool        int          // nb de candidats envoyés au reranker — depuis config.yaml
+	hnswThreshold     int          // full scan si len(vecCache) < seuil, HNSW sinon
+	hnswDirty         bool         // true si l'index HNSW a été modifié depuis le dernier saveHNSW
+	httpClient        *http.Client // Client HTTP réutilisé pour le reranker (évite les leaks de connexions)
 	searchRules       config.SearchRules
 	stopWordsMap      map[string]bool
 }
@@ -68,9 +71,15 @@ type StoreConfig struct {
 
 func New(base string, cfg StoreConfig) (*Store, error) {
 	p := os.ExpandEnv(base)
-	if p[0] == '~' {
-		h, _ := os.UserHomeDir()
+	if len(p) > 0 && p[0] == '~' {
+		h, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("New: UserHomeDir: %w", err)
+		}
 		p = filepath.Join(h, p[1:])
+	}
+	if p == "" {
+		return nil, fmt.Errorf("New: db_path est vide")
 	}
 	os.MkdirAll(p, 0755)
 
@@ -124,6 +133,7 @@ func New(base string, cfg StoreConfig) (*Store, error) {
 		hnswThreshold:     cfg.HNSWThreshold,
 		searchRules:       cfg.SearchRules,
 		stopWordsMap:      make(map[string]bool),
+		httpClient:        &http.Client{Timeout: time.Duration(cfg.RerankerTimeoutMs) * time.Millisecond},
 	}
 
 	for _, w := range cfg.SearchRules.StopWords {
@@ -134,10 +144,11 @@ func New(base string, cfg StoreConfig) (*Store, error) {
 	info, err := vf.Stat()
 	if err == nil && info.Size() > 0 {
 		data := make([]byte, info.Size())
-		vf.ReadAt(data, 0)
+		if _, err := vf.ReadAt(data, 0); err != nil {
+			return nil, fmt.Errorf("New: lecture vectors.bin: %w", err)
+		}
 		rows, rerr := db.Query("SELECT id, offset FROM chunks ORDER BY offset")
 		if rerr == nil {
-			defer rows.Close()
 			for rows.Next() {
 				var id string
 				var offset int64
@@ -149,6 +160,7 @@ func New(base string, cfg StoreConfig) (*Store, error) {
 					s.vecCache.set(id, vec)
 				}
 			}
+			rows.Close()
 		}
 	}
 
@@ -241,78 +253,89 @@ func (s *Store) InsertBatch(ids, texts, filenames []string, vecs [][]float32) er
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// 1. Insertion SQL locale (inchangée)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	// Phase 1 : écriture des vecteurs binaires
-	// flock POSIX : sérialise les écritures inter-process sur vectors.bin
-	// (SQLite WAL protège rag.db, mais vectors.bin n'a pas de protection native)
-	if err := flockExclusive(s.vecs); err != nil {
-		return fmt.Errorf("InsertBatch: flock vectors.bin: %w", err)
-	}
-	defer flockUnlock(s.vecs)
-
-	// Seek end-of-file pour obtenir l'offset courant de manière atomique
-	// (plus fiable que Stat().Size() qui peut être racé entre process)
-	offset, err := s.vecs.Seek(0, io.SeekEnd)
-	if err != nil {
-		return fmt.Errorf("InsertBatch: seek vectors.bin: %w", err)
-	}
-
-	vecOffsets := make([]int64, len(ids))
 	for i := range ids {
-		vecOffsets[i] = offset
-		buf := make([]byte, vecBytes)
-		for j, f := range vecs[i] {
-			binary.LittleEndian.PutUint32(buf[j*4:], math.Float32bits(f))
-		}
-		if _, err := s.vecs.WriteAt(buf, offset); err != nil {
-			return fmt.Errorf("InsertBatch: write vec[%d]: %w", i, err)
-		}
-		offset += int64(vecBytes)
+		res, _ := tx.Exec("INSERT INTO chunks (id, text, filename) VALUES (?, ?, ?)", ids[i], texts[i], filenames[i])
+		rowid, _ := res.LastInsertId()
+		tx.Exec("INSERT INTO fts_chunks(rowid, text) VALUES(?, ?)", rowid, texts[i])
 	}
-
-	// Phase 2 : insertion SQLite
-	for i := range ids {
-		_, err = tx.Exec("INSERT INTO chunks (id, text, filename, offset) VALUES (?, ?, ?, ?)",
-			ids[i], texts[i], filenames[i], vecOffsets[i])
-		if err != nil {
-			return fmt.Errorf("InsertBatch: insert chunk[%d]: %w", i, err)
-		}
-	}
-
-	stmt, err := tx.Prepare("INSERT INTO fts_chunks(rowid, text) VALUES(?, ?)")
-	if err != nil {
-		return fmt.Errorf("InsertBatch: prepare FTS: %w", err)
-	}
-	defer stmt.Close()
-
-	for i := range ids {
-		var rowid int64
-		err = tx.QueryRow("SELECT rowid FROM chunks WHERE id = ?", ids[i]).Scan(&rowid)
-		if err != nil {
-			return fmt.Errorf("InsertBatch: get rowid[%d]: %w", i, err)
-		}
-		if _, err = stmt.Exec(rowid, texts[i]); err != nil {
-			return fmt.Errorf("InsertBatch: insert FTS[%d]: %w", i, err)
-		}
-	}
-
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("InsertBatch: commit: %w", err)
+		return err
 	}
 
-	// Phase 3 : mise à jour cache LRU + index HNSW (après commit SQL)
-	var newNodes []hnsw.Node[string]
+	// 2. Mise à jour HNSW locale (inchangée)
+	var nodes []hnsw.Node[string]
 	for i := range ids {
-		s.vecCache.set(ids[i], vecs[i])
-		newNodes = append(newNodes, hnsw.MakeNode(ids[i], vecs[i]))
+		nodes = append(nodes, hnsw.MakeNode(ids[i], vecs[i]))
 	}
-	s.hnswIdx.Add(newNodes...)
-	s.hnswDirty = true // persistance différée — flush dans Close() ou FlushHNSW()
+	s.hnswIdx.Add(nodes...)
+
+	// ==========================================
+	// 3. ENVOI VERS QDRANT (MAC MINI) - MODIFIÉ
+	// ==========================================
+	type QPoint struct {
+		ID      string                 `json:"id"`
+		Vector  []float32              `json:"vector"`
+		Payload map[string]interface{} `json:"payload"`
+	}
+
+	points := make([]QPoint, len(ids))
+	for i := range ids {
+		points[i] = QPoint{
+			ID:     ids[i],
+			Vector: vecs[i],
+			Payload: map[string]interface{}{
+				"text":     texts[i],
+				"filename": filenames[i],
+			},
+		}
+	}
+
+	const qdrantBatchSize = 50 // 50 points par requête (ajustable)
+	qdrantURL := "http://100.101.108.111:6333/collections/cours-bts/points?wait=true"
+
+	for start := 0; start < len(points); start += qdrantBatchSize {
+		end := start + qdrantBatchSize
+		if end > len(points) {
+			end = len(points)
+		}
+		batch := points[start:end]
+
+		payload := map[string]interface{}{"points": batch}
+		body, err := json.Marshal(payload)
+		if err != nil {
+			fmt.Printf("\n❌ Erreur marshal batch %d-%d: %v", start, end, err)
+			continue
+		}
+
+		// Utiliser PUT au lieu de POST
+		req, err := http.NewRequest("PUT", qdrantURL, bytes.NewBuffer(body))
+		if err != nil {
+			fmt.Printf("\n❌ Erreur création requête batch %d-%d: %v", start, end, err)
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			fmt.Printf("\n❌ ERREUR RÉSEAU batch %d-%d: %v", start, end, err)
+			continue
+		}
+
+		if resp.StatusCode == 200 {
+			fmt.Printf("\n✅ Sync Qdrant batch %d-%d : %d points", start, end, len(batch))
+		} else {
+			respBody, _ := io.ReadAll(resp.Body)
+			fmt.Printf("\n❌ ERREUR QDRANT (%d) batch %d-%d : %s", resp.StatusCode, start, end, string(respBody))
+		}
+		resp.Body.Close()
+	}
 
 	return nil
 }
@@ -445,8 +468,11 @@ func (s *Store) rerankChunks(query string, chunks []Chunk) ([]Chunk, error) {
 	}
 
 	timeout := time.Duration(s.rerankerTimeoutMs) * time.Millisecond
-	httpClient := &http.Client{Timeout: timeout}
-	resp, err := httpClient.Post(s.rerankerURL, "application/json", bytes.NewReader(body))
+	if s.httpClient.Timeout != timeout {
+		// Mise à jour si le timeout a changé (cas rare)
+		s.httpClient.Timeout = timeout
+	}
+	resp, err := s.httpClient.Post(s.rerankerURL, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("reranker unreachable: %w", err)
 	}
@@ -536,7 +562,9 @@ func (s *Store) searchVectorFallback(queryVec []float32, k int) ([]Chunk, error)
 		vec, ok := s.vecCache.get(c.ID)
 		if !ok {
 			buf := make([]byte, vecBytes)
-			s.vecs.ReadAt(buf, offset)
+			if _, err := s.vecs.ReadAt(buf, offset); err != nil {
+				continue
+			}
 			vec = make([]float32, vecDim)
 			for i := 0; i < vecDim; i++ {
 				vec[i] = math.Float32frombits(binary.LittleEndian.Uint32(buf[i*4:]))

@@ -3,12 +3,14 @@ package chunker
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/xml"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -341,11 +343,17 @@ func extractPDF(path string) (string, error) {
 		return "", fmt.Errorf("pdftotext introuvable — installe poppler: brew install poppler")
 	}
 
-	cmd := exec.Command(pdftotextBin, "-layout", "-enc", "UTF-8", path, "-")
+	// Timeout de 60s : évite le blocage infini sur un PDF corrompu ou chiffré
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, pdftotextBin, "-layout", "-enc", "UTF-8", path, "-")
 	var out, stderr bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("pdftotext: timeout (PDF corrompu ou trop volumineux) — %s", path)
+		}
 		return "", fmt.Errorf("pdftotext: %w — %s", err, stderr.String())
 	}
 	return out.String(), nil

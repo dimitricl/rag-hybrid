@@ -224,12 +224,12 @@ func CheckCoherence(q string, chunks []storage.Chunk, minScore float32) bool {
 func BuildContext(results []storage.Chunk, q string) (string, []storage.Chunk, int, float32) {
 	var ctx strings.Builder
 	included := 0
-	var maxCosine float32
 
 	var filteredChunks []storage.Chunk
 
 	seenFiles := make(map[string]bool)
 	seenTexts := make(map[string]bool) // Déduplique les chunks au contenu identique
+	var maxRRF float32                 // Score RRF brut du meilleur chunk (utilisé par l'appelant)
 	sourceNum := 1
 	for _, r := range results {
 		if r.Score < minDisplayScore {
@@ -244,8 +244,8 @@ func BuildContext(results []storage.Chunk, q string) (string, []storage.Chunk, i
 			continue
 		}
 		seenTexts[textKey] = true
-		if r.RRFRaw > maxCosine {
-			maxCosine = r.RRFRaw
+		if r.RRFRaw > maxRRF {
+			maxRRF = r.RRFRaw
 		}
 		ctx.WriteString(fmt.Sprintf(
 			"<source id=\"%d\" filename=\"%s\">\n%s\n</source>\n\n",
@@ -258,7 +258,7 @@ func BuildContext(results []storage.Chunk, q string) (string, []storage.Chunk, i
 		sourceNum++
 		included++
 	}
-	return ctx.String(), filteredChunks, len(seenFiles), maxCosine
+	return ctx.String(), filteredChunks, len(seenFiles), maxRRF
 }
 
 func buildPrompt(ctxStr, q, model string, chunks []storage.Chunk) string {

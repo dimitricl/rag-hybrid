@@ -11,7 +11,7 @@ web:
 
 rag:
   db_path: "~/.rag-hybrid"
-  embed_model: "nomic-embed-text:latest"
+  embed_model: "bge-m3:latest"
   default_model: "qwen2.5:7b"
   rerank_pool: 6
   # Nombre de chunks finaux envoyés au LLM comme contexte
