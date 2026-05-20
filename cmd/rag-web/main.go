@@ -155,9 +155,11 @@ const indexHTML = `<!DOCTYPE html>
 <div id="chat"></div>
 <div id="form">
   <select id="model">
-    <option value="mistral:7b-instruct">mistral:7b</option>
-    <option value="gemma2:9b">gemma2:9b</option>
+    <option value="gemma4:latest">gemma4 (défaut)</option>
     <option value="deepseek-coder-v2:16b">deepseek-coder:16b</option>
+    <option value="qwen2.5:14b-instruct-q4_K_M">qwen2.5:14b</option>
+    <option value="mistral-nemo:latest">mistral-nemo</option>
+    <option value="gemma2:9b">gemma2:9b</option>
   </select>
   <input id="q" type="text" placeholder="Pose ta question..." autocomplete="off">
   <button onclick="ask()">Envoyer</button>
