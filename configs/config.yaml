@@ -12,7 +12,7 @@ web:
 rag:
   db_path: "~/.rag-hybrid"
   embed_model: "bge-m3:latest"
-  default_model: "qwen2.5:7b"
+  default_model: "gemma4:latest"
   rerank_pool: 6
   # Nombre de chunks finaux envoyés au LLM comme contexte
   context_chunks: 3
