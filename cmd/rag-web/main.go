@@ -202,13 +202,22 @@ async function ask() {
     const { done, value } = await reader.read();
     if (done) break;
     buf += dec.decode(value, { stream: true });
-    const lines = buf.split('\n\n');
-    buf = lines.pop();
-    for (const line of lines) {
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) !== -1) {
+      const line = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
       if (!line.startsWith('data: ')) continue;
-      const d = line.slice(6);
+      const d = line.slice(6).trim();
       if (d === '[DONE]') break;
-      try { bot.textContent += JSON.parse(d); } catch {}
+      try {
+        const parsed = JSON.parse(d);
+        if (typeof parsed === 'string') {
+          bot.textContent += parsed;
+        } else if (parsed && parsed.error) {
+          bot.textContent = parsed.error;
+          bot.classList.add('err');
+        }
+      } catch { bot.textContent += d; }
       chat.scrollTop = chat.scrollHeight;
     }
   }
