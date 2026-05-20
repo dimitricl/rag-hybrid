@@ -19,7 +19,7 @@ func New(host string, port int) *Client {
 	return &Client{
 		BaseURL:    fmt.Sprintf("http://%s:%d", host, port),
 		HTTP:       &http.Client{Timeout: 120 * time.Second},
-		NumPredict: 1024,
+		NumPredict: 4096,
 	}
 }
 
