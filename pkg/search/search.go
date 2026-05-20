@@ -275,7 +275,7 @@ func buildPrompt(ctxStr, q, model string, chunks []storage.Chunk) string {
 RÈGLES STRICTES :
 1. RÉPONSE BASÉE SUR LES SOURCES : Ta réponse doit s'appuyer exclusivement sur les sources fournies ci-dessous.
 2. SYNTHÈSE AUTORISÉE : Tu peux (et dois) synthétiser les informations si elles sont présentes dans plusieurs sources pour répondre de manière complète.
-3. CITATIONS : Tu DOIS citer tes sources à la fin de chaque phrase ou paragraphe pertinent en utilisant le format [Source N] (ex: [Source 1]).
+3. CITATIONS : Cite tes sources UNE SEULE FOIS à la fin de ta réponse au format "Sources : [nom_fichier1, nom_fichier2]". N'insère AUCUN [Source N] dans le corps du texte.
 4. ABSENCE D'INFORMATION : Si les sources ne contiennent pas l'information demandée, réponds exactement : "Désolé, cette opération n'est pas décrite dans le cours."
 5. AUCUNE CONNAISSANCE EXTERNE : Ne complète pas les manques avec tes propres connaissances.`
 
@@ -283,7 +283,7 @@ RÈGLES STRICTES :
 
 	switch qt {
 	case QtRegister:
-		specificPrompt = "INSTRUCTIONS REGISTRES : Liste les bits, donne leur nom exact et leur description. Cite la source pour chaque registre. Si un bit est mentionné mais non décrit : 'non documenté'."
+		specificPrompt = "INSTRUCTIONS REGISTRES : Liste les bits, donne leur nom exact et leur description. Ne cite PAS les sources dans le corps du texte. Si un bit est mentionné mais non décrit : 'non documenté'."
 	case QtCode:
 		specificPrompt = fmt.Sprintf("INSTRUCTIONS PROGRAMMATION : %s\nFournis des explications ou du code basés sur les sources. Structure clairement ton code.", platformLine)
 	case QtCalculation:
@@ -301,7 +301,7 @@ SOURCES :
 
 QUESTION : %s
 
-⚠️ INSTRUCTION FINALE : Analyse attentivement les sources. Si elles couvrent le sujet (même partiellement ou via des termes connexes), synthétise une réponse précise. Cite systématiquement tes sources au format [Source N]. Ne refuse de répondre que si les sources sont totalement muettes sur le sujet.
+⚠️ INSTRUCTION FINALE : Analyse attentivement les sources. Si elles couvrent le sujet (même partiellement ou via des termes connexes), synthétise une réponse précise. Cite les sources UNE SEULE FOIS à la fin, format "Sources : [fichier1, fichier2]". Ne refuse de répondre que si les sources sont totalement muettes sur le sujet.
 
 RÉPONSE :`, systemPrompt, specificPrompt, ctxStr, q)
 }
