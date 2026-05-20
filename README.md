@@ -1,7 +1,7 @@
 # RAG Hybrid — BTS CIEL IR
 
-Système de Retrieval-Augmented Generation (RAG) hybride pour révisions BTS CIEL IR.  
-Combine recherche vectorielle (cosine similarity) + recherche plein-texte (FTS5 BM25) + re-ranking cross-encoder.
+Système RAG hybride pour révisions BTS CIEL IR.  
+Combine recherche vectorielle + FTS5 BM25 + re-ranking cross-encoder, 100% local.
 
 ## Architecture
 
@@ -9,40 +9,43 @@ Combine recherche vectorielle (cosine similarity) + recherche plein-texte (FTS5 
 Question (rag-chat / rag-web)
         │
         ▼
-[1] Embedding nomic-embed-text → Mac Mini Ollama (:11434)
+[1] Embedding  nomic-embed-text  → Mac Mini Ollama (:11434)
         │
         ▼
 [2] Recherche hybride SQLite
-    ├── Vectorielle : cosine similarity sur vecteurs 768 dims (RAM)
-    └── FTS5 BM25   : recherche plein-texte avec scoring BM25 natif
-    └── RRF          : fusion des deux scores (Reciprocal Rank Fusion)
+    ├── Vectorielle : cosine similarity, index HNSW (O log n), cache LRU RAM
+    ├── FTS5 BM25   : 3 stratégies (AND tech → OR tech → OR tous)
+    └── RRF         : fusion des scores (constante 60)
         │
         ▼
 [3] Re-ranker cross-encoder → MacBook Air local (:8765)
-    ms-marco-MiniLM-L-6-v2 — re-score les top-6 candidats
+    ms-marco-MiniLM-L-6-v2 — re-score top-6 candidats, timeout 500ms
+    fallback RRF si down
         │
         ▼
-[4] checkCoherence : bloque les questions multi-domaines sans co-occurrence
+[4] checkCoherence — bloque les questions multi-domaines sans co-occurrence
         │
         ▼
-[5] LLM → Mac Mini Ollama (deepseek-coder-v2:16b / gemma2:9b / mistral:7b)
+[5] LLM → Mac Mini Ollama  (deepseek-coder-v2:16b / gemma2:9b / mistral:7b)
         │
         ▼
-    Réponse avec citations de sources
+    Réponse avec citations de sources (noms de fichiers exacts)
 ```
 
 ## Prérequis
 
-- **Mac Mini M4** avec [Ollama](https://ollama.com) installé et accessible sur le réseau
-- **MacBook Air** pour le re-ranker Python et les binaires Go
+| Machine | Rôle |
+|---|---|
+| Mac Mini M4 | Ollama : embedding + LLM |
+| MacBook Air | Re-ranker Python + binaires Go |
+
 - Go 1.21+
-- Python 3.10+ avec `sentence-transformers`
-- `pdftotext` (poppler) : `brew install poppler`
+- Python 3.10+ (`sentence-transformers`, `uvicorn`, `fastapi`)
+- `pdftotext` : `brew install poppler`
 
 ## Installation
 
 ```bash
-# Clone le repo
 git clone https://github.com/dimitricl/rag-hybrid.git
 cd rag-hybrid
 
@@ -50,8 +53,7 @@ cd rag-hybrid
 go mod download
 
 # Dépendances Python
-pip3 install sentence-transformers --break-system-packages
-pip3 install reportlab --break-system-packages
+pip3 install sentence-transformers uvicorn fastapi reportlab --break-system-packages
 
 # Modèles Ollama (sur le Mac Mini)
 ollama pull nomic-embed-text
@@ -62,11 +64,11 @@ ollama pull gemma2:9b
 
 ## Configuration
 
-Édite `configs/config.yaml` :
+`configs/config.yaml` :
 
 ```yaml
 ollama:
-  host: "192.168.x.x"   # IP de ton Mac Mini
+  host: "192.168.x.x"   # IP du Mac Mini
   port: 11434
 
 reranker:
@@ -82,29 +84,36 @@ rag:
   default_model: "mistral:7b-instruct"
 ```
 
+Override sans toucher au fichier :
+
+```bash
+OLLAMA_HOST=192.168.1.50 ./rag-web
+```
+
 ## Build
 
 ```bash
-go build -o rag ./cmd/rag/
+go build -o rag      ./cmd/rag/
 go build -o rag-chat ./cmd/rag-chat/
-go build -o rag-web ./cmd/rag-web/
+go build -o rag-web  ./cmd/rag-web/
 ```
 
 ## Utilisation
 
-### 1. Démarrer le re-ranker
+### 1. Re-ranker
 
 ```bash
-python3 reranker.py &
+python3 reranker.py > /tmp/reranker.log 2>&1 &
+curl http://127.0.0.1:8765/health   # {"status":"ok"}
 ```
 
-### 2. Indexer les documents
+### 2. Indexation
 
 ```bash
 ./rag index ~/Documents/2CIEL_IR
 ```
 
-Formats supportés : `.pdf`, `.docx`, `.pptx`, `.md`, `.txt`, `.c`, `.cpp`, `.h`, `.ino`, `.py`
+Formats supportés : `.pdf` `.docx` `.pptx` `.md` `.txt` `.c` `.cpp` `.h` `.ino` `.py`
 
 ### 3. Interface terminal
 
@@ -112,94 +121,93 @@ Formats supportés : `.pdf`, `.docx`, `.pptx`, `.md`, `.txt`, `.c`, `.cpp`, `.h`
 ./rag-chat
 ```
 
-Commandes disponibles dans rag-chat :
-```
-!model deepseek-coder-v2:16b   # changer de modèle
-!files                          # lister les documents indexés
-!stats                          # statistiques de la base
-!help                           # aide complète
-exit                            # quitter
-```
+| Commande | Action |
+|---|---|
+| `!model deepseek-coder-v2:16b` | Changer de modèle |
+| `!files` | Lister les documents indexés |
+| `!stats` | Statistiques de la base |
+| `!help` | Aide |
+| `exit` | Quitter |
 
 ### 4. Interface web
 
 ```bash
 ./rag-web
-# Ouvre http://localhost:8080
+# http://localhost:8080
 ```
 
-## Tests automatisés
+Endpoint santé : `GET /health` → `{"status":"ok","chunks":N,"model":"..."}`
+
+## Tests
 
 ```bash
-# Lance la suite de 12 tests et génère un rapport PDF
+# Suite 12 tests → rapport PDF
 python3 rag_test.py --model deepseek-coder-v2:16b --output rapport.pdf
 
-# Comparaison entre modèles
+# Comparaison modèles
 python3 rag_test.py --model mistral:7b-instruct --output rapport_mistral.pdf
-python3 rag_test.py --model gemma2:9b --output rapport_gemma2.pdf
+python3 rag_test.py --model gemma2:9b           --output rapport_gemma2.pdf
 ```
 
 ### Résultats baseline (16/03/2026)
 
 | Modèle | PASS | PARTIAL | FAIL | Taux | Temps moyen |
-|--------|------|---------|------|------|-------------|
-| deepseek-coder-v2:16b | 10 | 2 | 0 | **83%** | 15.3s |
-| gemma2:9b | 10 | 2 | 0 | **83%** | 14.6s |
-| mistral:7b-instruct | 9 | 3 | 0 | **75%** | 19.9s |
+|---|---|---|---|---|---|
+| deepseek-coder-v2:16b | 10 | 2 | 0 | 83% | 15.3s |
+| gemma2:9b | 10 | 2 | 0 | 83% | 14.6s |
+| mistral:7b-instruct | 9 | 3 | 0 | 75% | 19.9s |
 
-## Structure du projet
+## Structure
 
 ```
 rag-hybrid/
 ├── cmd/
-│   ├── rag/            # Binaire d'indexation (rag index <dossier>)
-│   ├── rag-chat/       # Interface terminal streaming
-│   └── rag-web/        # Interface web SSE
+│   ├── rag/        # Indexation  (rag index <dossier>)
+│   ├── rag-chat/   # Terminal streaming
+│   └── rag-web/    # Web SSE  (port 8080)
 ├── pkg/
-│   ├── chunker/        # Découpage des documents en chunks
-│   ├── client/         # Client HTTP Ollama
-│   ├── config/         # Chargement config.yaml
-│   ├── indexer/        # Pipeline d'indexation batch
-│   ├── search/         # Moteur de recherche + prompts adaptatifs
-│   └── storage/        # SQLite FTS5 + vecteurs binaires + re-ranker
+│   ├── chunker/    # Découpage en chunks (1500 runes, overlap 150)
+│   ├── client/     # Client HTTP Ollama
+│   ├── config/     # config.yaml + env override
+│   ├── indexer/    # Pipeline d'indexation batch
+│   ├── search/     # Moteur + prompts adaptatifs + checkCoherence
+│   └── storage/    # SQLite FTS5 + HNSW + cache LRU + re-ranker
 ├── configs/
-│   └── config.yaml     # Configuration (IP, ports, modèles)
-├── reranker.py         # Service re-ranker Python (cross-encoder)
-├── rag_test.py         # Suite de tests → rapport PDF
-└── .gitignore
+│   └── config.yaml
+├── reranker.py     # Service cross-encoder (FastAPI/uvicorn)
+└── rag_test.py     # Suite de tests → PDF
 ```
 
 ## Détails techniques
 
 ### Chunking
-- Taille max : 1000 runes, overlap depuis dernière phrase complète
-- Minimum : 150 runes (filtre les fragments)
+- Taille max 1500 runes, overlap 150 runes depuis dernière phrase complète
+- Minimum 150 runes (filtre les fragments)
 - Détection de sections (titres numérotés, ALL CAPS)
-- Normalisation NFC des noms de fichiers (fix macOS NFD)
 - Blocs de code préservés intacts
+- Normalisation NFC des noms de fichiers (fix macOS NFD)
 
 ### Recherche hybride
-- **Vectorielle** : cosine similarity, cache RAM complet, fallback disque
-- **FTS5** : stratégie 3 niveaux (AND tech → OR tech → OR tous)
-- **BM25** : score natif FTS5 intégré dans le RRF
+- **Vectorielle** : cosine similarity, HNSW si > 2000 chunks, sinon full scan exact, cache LRU RAM borné
+- **FTS5** : AND tech → OR tech → OR tous (3 niveaux de fallback)
 - **RRF** : constante 60, fetchSize k×5, rerankPool 6
-- **Re-ranker** : ms-marco-MiniLM-L-6-v2, timeout 500ms, fallback RRF si down
+- **Re-ranker** : ms-marco-MiniLM-L-6-v2, MPS (Apple Silicon), fallback RRF si timeout
 
 ### Anti-hallucination
-- `checkCoherence` : bloque les questions croisant deux domaines sans co-occurrence dans les sources (ex: ADC + infrarouge)
-- Prompt adaptatif par type de question (registre, code, calcul, concept)
-- Règle citation : noms de fichiers exacts uniquement, pas d'URLs inventées
+- `checkCoherence` : bloque les questions croisant deux domaines sans co-occurrence dans les sources
+- Prompt adaptatif par type (registre, code, calcul, concept, général)
+- Citations : noms de fichiers exacts uniquement
 
 ### Cache embedding
-- En mémoire (session) + persistant sur disque (`~/.rag-hybrid/embed_cache.json`)
-- Invalidation automatique si > 500 entrées
-- Gain : -78% latence sur questions répétées après redémarrage
+- Session RAM + persistant disque (`~/.rag-hybrid/embed_cache.json`)
+- Invalidation au-delà de 500 entrées
+- −78% latence sur questions répétées après redémarrage
 
 ## Modèles recommandés
 
 | Usage | Modèle | Pourquoi |
-|-------|--------|----------|
+|---|---|---|
 | Registres AVR / Code | `deepseek-coder-v2:16b` | Meilleur sur le technique bas niveau |
-| Questions générales | `gemma2:9b` | Même score, plus léger, plus rapide |
-| Tests rapides | `mistral:7b-instruct` | Rapide mais moins fiable sur les registres |
-| Embedding | `nomic-embed-text:latest` | Meilleur sur ce corpus FR+technique |
+| Questions générales | `gemma2:9b` | Même score que deepseek, plus léger |
+| Tests rapides | `mistral:7b-instruct` | Rapide, moins fiable sur registres |
+| Embedding | `nomic-embed-text:latest` | Meilleur sur corpus FR+technique |
