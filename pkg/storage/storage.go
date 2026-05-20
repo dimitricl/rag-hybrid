@@ -7,7 +7,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"io"
 	"math"
 	"net/http"
 	"os"
@@ -277,66 +276,6 @@ func (s *Store) InsertBatch(ids, texts, filenames []string, vecs [][]float32) er
 	s.hnswIdx.Add(nodes...)
 
 	// ==========================================
-	// 3. ENVOI VERS QDRANT (MAC MINI) - MODIFIÉ
-	// ==========================================
-	type QPoint struct {
-		ID      string                 `json:"id"`
-		Vector  []float32              `json:"vector"`
-		Payload map[string]interface{} `json:"payload"`
-	}
-
-	points := make([]QPoint, len(ids))
-	for i := range ids {
-		points[i] = QPoint{
-			ID:     ids[i],
-			Vector: vecs[i],
-			Payload: map[string]interface{}{
-				"text":     texts[i],
-				"filename": filenames[i],
-			},
-		}
-	}
-
-	const qdrantBatchSize = 50 // 50 points par requête (ajustable)
-	qdrantURL := "http://100.101.108.111:6333/collections/cours-bts/points?wait=true"
-
-	for start := 0; start < len(points); start += qdrantBatchSize {
-		end := start + qdrantBatchSize
-		if end > len(points) {
-			end = len(points)
-		}
-		batch := points[start:end]
-
-		payload := map[string]interface{}{"points": batch}
-		body, err := json.Marshal(payload)
-		if err != nil {
-			fmt.Printf("\n❌ Erreur marshal batch %d-%d: %v", start, end, err)
-			continue
-		}
-
-		// Utiliser PUT au lieu de POST
-		req, err := http.NewRequest("PUT", qdrantURL, bytes.NewBuffer(body))
-		if err != nil {
-			fmt.Printf("\n❌ Erreur création requête batch %d-%d: %v", start, end, err)
-			continue
-		}
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := s.httpClient.Do(req)
-		if err != nil {
-			fmt.Printf("\n❌ ERREUR RÉSEAU batch %d-%d: %v", start, end, err)
-			continue
-		}
-
-		if resp.StatusCode == 200 {
-			fmt.Printf("\n✅ Sync Qdrant batch %d-%d : %d points", start, end, len(batch))
-		} else {
-			respBody, _ := io.ReadAll(resp.Body)
-			fmt.Printf("\n❌ ERREUR QDRANT (%d) batch %d-%d : %s", resp.StatusCode, start, end, string(respBody))
-		}
-		resp.Body.Close()
-	}
-
 	return nil
 }
 
