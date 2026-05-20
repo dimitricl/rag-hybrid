@@ -142,6 +142,11 @@ const indexHTML = `<!DOCTYPE html>
   .user { background: #161b22; border-left: 3px solid #58a6ff; }
   .bot  { background: #0d1117; border-left: 3px solid #3fb950; }
   .err  { border-left-color: #f85149; color: #f85149; }
+  .bot code { background: #161b22; padding: 0.1em 0.4em; border-radius: 3px; font-size: 0.9em; }
+  .bot pre  { background: #161b22; padding: 0.8em; border-radius: 6px; overflow-x: auto; margin: 0.5em 0; }
+  .bot p    { margin: 0.4em 0; }
+  .bot ul, .bot ol { margin: 0.4em 0 0.4em 1.5em; }
+  .bot strong { color: #e6edf3; }
   #form { display: flex; gap: 0.5rem; width: 100%; max-width: 800px; }
   #q { flex: 1; padding: 0.6rem 0.8rem; background: #161b22; border: 1px solid #30363d; color: #c9d1d9; border-radius: 6px; font-family: monospace; font-size: 0.95rem; }
   #q:focus { outline: none; border-color: #58a6ff; }
@@ -149,6 +154,7 @@ const indexHTML = `<!DOCTYPE html>
   button:hover { background: #2ea043; }
   select { padding: 0.6rem; background: #161b22; border: 1px solid #30363d; color: #c9d1d9; border-radius: 6px; font-family: monospace; }
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
 </head>
 <body>
 <h1>⚡ RAG Hybrid — BTS CIEL IR</h1>
@@ -212,7 +218,8 @@ async function ask() {
       try {
         const parsed = JSON.parse(d);
         if (typeof parsed === 'string') {
-          bot.textContent += parsed;
+          bot._raw = (bot._raw || '') + parsed;
+          bot.innerHTML = marked.parse(bot._raw);
         } else if (parsed && parsed.error) {
           bot.textContent = parsed.error;
           bot.classList.add('err');
