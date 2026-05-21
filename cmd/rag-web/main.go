@@ -169,12 +169,48 @@ const indexHTML = `<!DOCTYPE html>
   </select>
   <input id="q" type="text" placeholder="Pose ta question..." autocomplete="off">
   <button onclick="ask()">Envoyer</button>
+  <button onclick="clearHistory()" style="background:#6e2020;">Effacer</button>
 </div>
 <script>
 const chat = document.getElementById('chat');
 const input = document.getElementById('q');
+const HISTORY_KEY = 'rag-history';
+const MAX_HISTORY = 100;
 
 input.addEventListener('keydown', e => { if (e.key === 'Enter') ask(); });
+
+// Charge et affiche l'historique au démarrage
+function loadHistory() {
+  try {
+    const h = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+    h.forEach(({ cls, text, raw }) => {
+      const d = document.createElement('div');
+      d.className = 'msg ' + cls;
+      if (cls === 'bot' && raw) {
+        d._raw = raw;
+        d.innerHTML = marked.parse(raw);
+      } else {
+        d.textContent = text;
+      }
+      chat.appendChild(d);
+    });
+    chat.scrollTop = chat.scrollHeight;
+  } catch(e) { localStorage.removeItem(HISTORY_KEY); }
+}
+
+function saveMsg(cls, text, raw) {
+  try {
+    const h = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+    h.push({ cls, text, raw: raw || null });
+    if (h.length > MAX_HISTORY) h.splice(0, h.length - MAX_HISTORY);
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(h));
+  } catch(e) {}
+}
+
+function clearHistory() {
+  localStorage.removeItem(HISTORY_KEY);
+  chat.innerHTML = '';
+}
 
 function addMsg(text, cls) {
   const d = document.createElement('div');
@@ -191,6 +227,7 @@ async function ask() {
   const model = document.getElementById('model').value;
   input.value = '';
   addMsg(q, 'user');
+  saveMsg('user', q, null);
   const bot = addMsg('', 'bot');
 
   const res = await fetch('/ask', {
@@ -228,7 +265,12 @@ async function ask() {
       chat.scrollTop = chat.scrollHeight;
     }
   }
+  // Sauvegarde la réponse complète
+  if (bot._raw) saveMsg('bot', '', bot._raw);
+  else if (bot.textContent) saveMsg('bot', bot.textContent, null);
 }
+
+loadHistory();
 </script>
 </body>
 </html>`
