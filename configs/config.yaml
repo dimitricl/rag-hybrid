@@ -11,12 +11,12 @@ web:
 
 rag:
   db_path: "~/.rag-hybrid"
-  embed_model: "bge-m3:latest"
+  embed_model: "nomic-embed-text:latest"
   default_model: "gemma4:latest"
   rerank_pool: 6
   # Nombre de chunks finaux envoyés au LLM comme contexte
   context_chunks: 3
-  min_score: 0.30
+  min_score: 0.0
   chunk_size: 1500
   chunk_overlap: 150
   # Fusion RRF : constante de lissage (plus élevé = résultats moins sensibles au rang)

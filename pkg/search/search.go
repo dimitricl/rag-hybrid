@@ -50,7 +50,7 @@ func NewWithMinScore(c *client.Client, s *storage.Store, embedModel string, minS
 // NewWithConfig crée un Engine avec tous les paramètres issus de config.yaml.
 func NewWithConfig(c *client.Client, s *storage.Store, cfg config.RAGConfig) *Engine {
 	e := New(c, s, cfg.EmbedModel)
-	if cfg.MinScore > 0 {
+	if cfg.MinScore >= 0 {
 		e.minScore = cfg.MinScore
 	}
 	if cfg.ContextChunks > 0 {
