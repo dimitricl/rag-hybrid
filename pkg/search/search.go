@@ -306,6 +306,38 @@ QUESTION : %s
 RÉPONSE :`, systemPrompt, specificPrompt, ctxStr, q)
 }
 
+
+func isSmallTalk(q string) bool {
+	lower := strings.ToLower(strings.TrimSpace(q))
+	triggers := []string{
+		"hello", "bonjour", "salut", "hi", "hey", "coucou",
+		"merci", "thanks", "thank you",
+		"ca va", "comment tu vas", "comment vas-tu",
+		"qui es-tu", "qui es tu", "tu es quoi",
+		"tu t appelles", "ton nom",
+		"au revoir", "bye", "a bientot", "ciao",
+		"bien joue", "bravo", "super", "cool", "nickel",
+		"aide", "help", "que sais-tu faire", "que peux-tu faire",
+	}
+	for _, t := range triggers {
+		if strings.Contains(lower, t) {
+			return true
+		}
+	}
+	return false
+}
+
+func smallTalkPrompt(q string) string {
+	return fmt.Sprintf(`Tu es un assistant pour etudiants BTS CIEL. Tu es sympa, direct et naturel.
+Si on te salue, reponds chaleureusement. Si on te remercie, sois modeste.
+Si on te demande ce que tu fais, explique que tu aides sur les cours BTS CIEL (electro, reseau, cyber).
+Reposes courtes et naturelles, 2-3 phrases max.
+
+Message : %s
+
+Reponse :`, q)
+}
+
 func (e *Engine) Ask(q string) (string, error) {
 	return e.AskWithModel(q, "mistral:7b-instruct")
 }
@@ -330,6 +362,9 @@ func (e *Engine) AskStream(q string) (<-chan string, error) {
 }
 
 func (e *Engine) AskStreamWithModel(ctx context.Context, q, model string) (<-chan string, error) {
+	if isSmallTalk(q) {
+		return e.client.GenerateStream(ctx, smallTalkPrompt(q), model)
+	}
 	res, err := e.Search(q, e.contextChunks)
 	if err != nil {
 		return nil, err
