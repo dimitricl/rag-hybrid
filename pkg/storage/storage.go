@@ -307,9 +307,15 @@ func (s *Store) SearchSmart(query string, queryVec []float32, k int) ([]Chunk, e
 		ftsWeight = s.ftsTechWeight // FTS dominante sur les questions registres/acronymes
 	}
 
-	for rank, hit := range vecHits {
-		chunkMap[hit.ID] = &vecHits[rank]
-		rrfScores[hit.ID] += 1.0 / (s.rrfConstant + float32(rank+1))
+	vecWeight := float32(1.0)
+	if s.isTechnicalQuery(query) {
+		vecWeight = 0.0 // query technique : FTS5 uniquement, vectoriel pollue
+	}
+	if vecWeight > 0 {
+		for rank, hit := range vecHits {
+			chunkMap[hit.ID] = &vecHits[rank]
+			rrfScores[hit.ID] += vecWeight / (s.rrfConstant + float32(rank+1))
+		}
 	}
 	for rank, hit := range keywordHits {
 		if _, exists := chunkMap[hit.ID]; !exists {
@@ -582,6 +588,28 @@ func (s *Store) fullTextSearch(query string, k int) ([]Chunk, error) {
 			techWords = append(techWords, clean+"*")
 		}
 	}
+
+	// Ajoute les termes techniques reconnus (config) même en minuscules
+	for _, w := range words {
+		clean := strings.Trim(w, ".,;:!?\"'()[]")
+		if len([]rune(clean)) < 3 {
+			continue
+		}
+		lower := strings.ToLower(clean)
+		for _, term := range s.searchRules.TechnicalTerms {
+			if strings.TrimSpace(term) == lower {
+				techWords = append(techWords, clean+"*")
+				break
+			}
+		}
+	}
+	// Déduplique techWords
+	seen := make(map[string]bool)
+	var dedupTech []string
+	for _, tw := range techWords {
+		if !seen[tw] { seen[tw] = true; dedupTech = append(dedupTech, tw) }
+	}
+	techWords = dedupTech
 
 	if len(techWords) > 1 {
 		if results, err := s.executeFTS(strings.Join(techWords, " AND "), k); err == nil && len(results) > 0 {

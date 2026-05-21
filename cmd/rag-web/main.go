@@ -51,6 +51,7 @@ func main() {
 	mux.HandleFunc("/", handleIndex)
 	mux.HandleFunc("/ask", handleAsk)
 	mux.HandleFunc("/health", handleHealth)
+	mux.HandleFunc("/api/chat-stream", handleChatStream)
 
 	addr := fmt.Sprintf(":%d", cfg.Web.Port)
 	fmt.Printf("rag-web démarré sur http://localhost%s\n", addr)
@@ -126,6 +127,88 @@ func jsonErr(err error) string {
 	b, _ := json.Marshal(map[string]string{"error": err.Error()})
 	return string(b)
 }
+
+func handleChatStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST requis", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Q          string `json:"q"`
+		Model      string `json:"model"`
+		NumPredict int    `json:"num_predict"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Q) == "" {
+		http.Error(w, "body JSON invalide", http.StatusBadRequest)
+		return
+	}
+	if req.Model == "" {
+		req.Model = cfg.RAG.DefaultModel
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming non supporté", http.StatusInternalServerError)
+		return
+	}
+	sendEvent := func(v any) {
+		b, _ := json.Marshal(v)
+		fmt.Fprintf(w, "data: %s\n\n", string(b))
+		flusher.Flush()
+	}
+	t0 := time.Now()
+	res, err := engine.Search(req.Q, cfg.RAG.ContextChunks)
+	searchMs := int(time.Since(t0).Milliseconds())
+	if err != nil || len(res) == 0 {
+		sendEvent(map[string]any{"type": "fallback"})
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
+		return
+	}
+	sources := make([]map[string]any, 0, len(res))
+	for _, c := range res {
+		textLen := len([]rune(c.Text))
+		if textLen > 200 { textLen = 200 }
+		sources = append(sources, map[string]any{
+			"filename": c.Filename,
+			"score":    c.Score,
+			"text":     string([]rune(c.Text)[:textLen]),
+		})
+	}
+	sendEvent(map[string]any{
+		"type": "sources", "sources": sources,
+		"metrics": map[string]any{"search_time": fmt.Sprintf("%dms", searchMs), "gen_time": "0s", "total_time": "0s"},
+	})
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+	defer cancel()
+	tGen := time.Now()
+	ch, err := engine.AskStreamWithModel(ctx, req.Q, req.Model)
+	if err != nil {
+		sendEvent(map[string]any{"type": "fallback"})
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
+		return
+	}
+	for tok := range ch {
+		sendEvent(map[string]any{"type": "token", "text": tok})
+	}
+	genS := time.Since(tGen).Seconds()
+	totalS := time.Since(t0).Seconds()
+	sendEvent(map[string]any{
+		"type": "sources", "sources": sources,
+		"metrics": map[string]any{
+			"search_time": fmt.Sprintf("%dms", searchMs),
+			"gen_time":    fmt.Sprintf("%.1fs", genS),
+			"total_time":  fmt.Sprintf("%.1fs", totalS),
+		},
+	})
+	fmt.Fprintf(w, "data: [DONE]\n\n")
+	flusher.Flush()
+}
+
 
 const indexHTML = `<!DOCTYPE html>
 <html lang="fr">

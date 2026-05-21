@@ -64,7 +64,17 @@ func (e *Engine) Store() *storage.Store {
 	return e.store
 }
 
+func normalizeQuery(q string) string {
+	q = strings.TrimSpace(q)
+	// Supprime la ponctuation finale
+	for len(q) > 0 && strings.ContainsRune(".,;:!?", rune(q[len(q)-1])) {
+		q = q[:len(q)-1]
+	}
+	return q
+}
+
 func (e *Engine) Search(q string, k int) ([]storage.Chunk, error) {
+	q = normalizeQuery(q)
 	v, err := e.client.Embed([]string{"Represent this sentence for searching relevant passages: " + q}, e.embedModel)
 	if err != nil {
 		return nil, err
