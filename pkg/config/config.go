@@ -40,6 +40,8 @@ type RAGConfig struct {
 	RerankerTimeoutMs   int      `yaml:"reranker_timeout_ms"`   // Timeout HTTP vers reranker en ms (défaut 500)
 	HNSWThreshold       int      `yaml:"hnsw_threshold"`        // Nb de chunks au-dessus duquel HNSW remplace le full scan (défaut 2000)
 	VecCacheSize        int      `yaml:"vec_cache_size"`        // Capacité max du cache LRU vecteurs (0 = illimité, défaut 10000)
+	MaxPerFile          int      `yaml:"max_per_file"`          // Max chunks par fichier dans la réponse (défaut 2, 0=illimité)
+	MMRLambda           float32  `yaml:"mmr_lambda"`            // 0..1 pertinence vs diversité (défaut 0.7)
 	CoreFilePatterns    []string `yaml:"core_file_patterns"`    // Fichiers ignorant la limite max_chunks_per_file
 	IgnoredDirs         []string `yaml:"ignored_dirs"`          // Répertoires ignorés au scan
 	IgnoredFilePatterns []string `yaml:"ignored_file_patterns"` // Sous-chaînes de noms de fichiers à ignorer
@@ -71,9 +73,9 @@ func defaults() Config {
 		RAG: RAGConfig{
 			DBPath:              "~/.rag-hybrid",
 			EmbedModel:          "nomic-embed-text:latest",
-			DefaultModel:        "mistral:7b-instruct",
-			RerankPool:          6,
-			ContextChunks:       3,
+			DefaultModel:        "gemma3:4b",
+			RerankPool:          12,
+			ContextChunks:       8,
 			ChunkSize:           1500,
 			ChunkOverlap:        150,
 			MaxChunksPerFile:    50,
@@ -84,6 +86,8 @@ func defaults() Config {
 			RerankerTimeoutMs:   500,
 			HNSWThreshold:       2000,
 			VecCacheSize:        10000,
+			MaxPerFile:          2,
+			MMRLambda:           0.7,
 			CoreFilePatterns:    []string{},
 			IgnoredDirs:         []string{"node_modules", "__pycache__", ".git"},
 			IgnoredFilePatterns: []string{},

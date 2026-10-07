@@ -38,6 +38,8 @@ func main() {
 		RerankPool:        cfg.RAG.RerankPool,
 		HNSWThreshold:     cfg.RAG.HNSWThreshold,
 		VecCacheSize:      cfg.RAG.VecCacheSize,
+		MaxPerFile:        cfg.RAG.MaxPerFile,
+		MMRLambda:         cfg.RAG.MMRLambda,
 		SearchRules:       cfg.SearchRules,
 	})
 	if err != nil {
@@ -171,7 +173,9 @@ func handleChatStream(w http.ResponseWriter, r *http.Request) {
 	sources := make([]map[string]any, 0, len(res))
 	for _, c := range res {
 		textLen := len([]rune(c.Text))
-		if textLen > 200 { textLen = 200 }
+		if textLen > 200 {
+			textLen = 200
+		}
 		sources = append(sources, map[string]any{
 			"filename": c.Filename,
 			"score":    c.Score,
@@ -209,7 +213,6 @@ func handleChatStream(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 }
 
-
 const indexHTML = `<!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -244,7 +247,7 @@ const indexHTML = `<!DOCTYPE html>
 <div id="chat"></div>
 <div id="form">
   <select id="model">
-    <option value="gemma4:latest">gemma4 (défaut)</option>
+    <option value="gemma3:4b">gemma3:4b (défaut)</option>
     <option value="deepseek-coder-v2:16b">deepseek-coder:16b</option>
     <option value="qwen2.5:14b-instruct-q4_K_M">qwen2.5:14b</option>
     <option value="mistral-nemo:latest">mistral-nemo</option>

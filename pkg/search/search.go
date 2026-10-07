@@ -73,22 +73,57 @@ func normalizeQuery(q string) string {
 	return q
 }
 
+// stripStopwords retire les mots vides FR/EN pour la 2e passe d'embedding.
+func stripStopwords(q string) string {
+	stop := map[string]bool{
+		"comment": true, "quels": true, "quelles": true, "quel": true, "quelle": true,
+		"quoi": true, "pourquoi": true, "est": true, "sont": true, "dans": true,
+		"avec": true, "pour": true, "vers": true, "entre": true, "comme": true,
+		"tout": true, "cette": true, "mais": true, "donc": true, "aussi": true,
+		"leur": true, "être": true, "les": true, "des": true, "une": true,
+		"qui": true, "que": true, "sur": true, "aux": true, "the": true,
+		"and": true, "for": true, "cest": true, "mon": true,
+		"ma": true, "mes": true, "est-ce": true,
+	}
+	var kept []string
+	for _, w := range strings.Fields(q) {
+		if !stop[strings.ToLower(strings.Trim(w, ".,;:!?\"'()[]"))] {
+			kept = append(kept, w)
+		}
+	}
+	return strings.Join(kept, " ")
+}
+
 func (e *Engine) Search(q string, k int) ([]storage.Chunk, error) {
 	q = normalizeQuery(q)
 	v, err := e.client.Embed([]string{"Represent this sentence for searching relevant passages: " + q}, e.embedModel)
 	if err != nil {
 		return nil, err
 	}
-	return e.store.SearchSmart(q, v[0], k)
+	vec := v[0]
+	// 2e embedding sur requête épurée (sans mots vides) → moyennée avec la 1re.
+	// Coût : 1 appel embed de plus, gain : meilleur rappel sur questions naturelles longues.
+	if stripped := stripStopwords(q); stripped != "" && stripped != q {
+		if v2, err := e.client.Embed([]string{"Represent this sentence for searching relevant passages: " + stripped}, e.embedModel); err == nil && len(v2) > 0 && len(v2[0]) == len(vec) {
+			for i := range vec {
+				vec[i] = (vec[i] + v2[0][i]) / 2
+			}
+		}
+	}
+	return e.store.SearchSmart(q, vec, k)
 }
 
 // EXPORTÉ : Restauration de SearchWithVec pour le cache de rag-chat
 func (e *Engine) SearchWithVec(q string, k int) ([]storage.Chunk, []float32, error) {
-	v, err := e.client.Embed([]string{"Represent this sentence for searching relevant passages: " + q}, e.embedModel)
+	res, err := e.Search(q, k)
 	if err != nil {
 		return nil, nil, err
 	}
-	res, err := e.store.SearchSmart(q, v[0], k)
+	// Re-embed pour le vecteur de retour (évite de dupliquer la logique de fusion)
+	v, err := e.client.Embed([]string{"Represent this sentence for searching relevant passages: " + normalizeQuery(q)}, e.embedModel)
+	if err != nil {
+		return res, nil, nil
+	}
 	return res, v[0], err
 }
 
@@ -315,7 +350,6 @@ QUESTION : %s
 
 RÉPONSE :`, systemPrompt, specificPrompt, ctxStr, q)
 }
-
 
 func isSmallTalk(q string) bool {
 	lower := strings.ToLower(strings.TrimSpace(q))

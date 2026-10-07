@@ -22,8 +22,7 @@ import (
 	"rag-hybrid/pkg/config"
 )
 
-const vecDim = 1024
-const vecBytes = vecDim * 4
+const defaultVecDim = 768 // nomic-embed-text ; la vraie dim est détectée au 1er insert
 
 type Chunk struct {
 	ID       string    `json:"id"`
@@ -41,6 +40,7 @@ type Store struct {
 	vecCache *lruCache           // Cache RAM LRU borné : clé = chunk.ID
 	hnswIdx  *hnsw.Graph[string] // Index ANN : O(log n) au lieu de O(n)
 	hnswPath string              // Chemin de persistance hnsw.bin
+	vecDim   int                 // Dimension des vecteurs (détectée au 1er insert, persistée en table meta)
 	// Paramètres RRF/reranker issus de config.yaml
 	rrfConstant       float32
 	ftsWeight         float32
@@ -50,6 +50,8 @@ type Store struct {
 	rerankPool        int          // nb de candidats envoyés au reranker — depuis config.yaml
 	hnswThreshold     int          // full scan si len(vecCache) < seuil, HNSW sinon
 	hnswDirty         bool         // true si l'index HNSW a été modifié depuis le dernier saveHNSW
+	maxPerFile        int          // max chunks par fichier dans les résultats finaux (diversité, 0=illimité)
+	mmrLambda         float32      // 0..1 : 1 = pertinence pure, 0 = diversité pure (défaut 0.7, 0 = désactivé)
 	httpClient        *http.Client // Client HTTP réutilisé pour le reranker (évite les leaks de connexions)
 	searchRules       config.SearchRules
 	stopWordsMap      map[string]bool
@@ -65,6 +67,8 @@ type StoreConfig struct {
 	RerankPool        int // Nb de candidats envoyés au cross-encoder (défaut 6)
 	HNSWThreshold     int // Full scan si nb chunks < seuil, HNSW sinon
 	VecCacheSize      int // Capacité max du cache LRU (0 = illimité)
+	MaxPerFile        int // Max chunks par fichier dans résultats finaux (0=illimité, défaut 2)
+	MMRLambda         float32
 	SearchRules       config.SearchRules
 }
 
@@ -100,6 +104,11 @@ func New(base string, cfg StoreConfig) (*Store, error) {
 			offset INTEGER
 		);
 
+		CREATE TABLE IF NOT EXISTS meta (
+			key TEXT PRIMARY KEY,
+			value TEXT
+		);
+
 		CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunks USING fts5(
 			text, 
 			content='chunks', 
@@ -123,6 +132,7 @@ func New(base string, cfg StoreConfig) (*Store, error) {
 		vecs:              vf,
 		vecCache:          newLRUCache(cfg.VecCacheSize),
 		hnswPath:          hnswPath,
+		vecDim:            0, // détecté ci-dessous (meta) ou au 1er InsertBatch
 		rrfConstant:       cfg.RRFConstant,
 		ftsWeight:         cfg.FTSWeight,
 		ftsTechWeight:     cfg.FTSTechWeight,
@@ -130,6 +140,8 @@ func New(base string, cfg StoreConfig) (*Store, error) {
 		rerankerURL:       cfg.RerankerURL,
 		rerankPool:        cfg.RerankPool,
 		hnswThreshold:     cfg.HNSWThreshold,
+		maxPerFile:        cfg.MaxPerFile,
+		mmrLambda:         cfg.MMRLambda,
 		searchRules:       cfg.SearchRules,
 		stopWordsMap:      make(map[string]bool),
 		httpClient:        &http.Client{Timeout: time.Duration(cfg.RerankerTimeoutMs) * time.Millisecond},
@@ -139,28 +151,51 @@ func New(base string, cfg StoreConfig) (*Store, error) {
 		s.stopWordsMap[w] = true
 	}
 
+	// --- Dimension des vecteurs (persistée en table meta) ---
+	var dimStr string
+	if err := db.QueryRow("SELECT value FROM meta WHERE key='vec_dim'").Scan(&dimStr); err == nil {
+		var d int
+		if _, err := fmt.Sscanf(dimStr, "%d", &d); err == nil && d > 0 {
+			s.vecDim = d
+		}
+	}
+
 	// --- Chargement des vecteurs en RAM ---
 	info, err := vf.Stat()
-	if err == nil && info.Size() > 0 {
+	if err == nil && info.Size() > 0 && s.vecDim > 0 {
+		vecBytes := int64(s.vecDim * 4)
 		data := make([]byte, info.Size())
 		if _, err := vf.ReadAt(data, 0); err != nil {
 			return nil, fmt.Errorf("New: lecture vectors.bin: %w", err)
 		}
-		rows, rerr := db.Query("SELECT id, offset FROM chunks ORDER BY offset")
+		rows, rerr := db.Query("SELECT id, offset FROM chunks WHERE offset IS NOT NULL ORDER BY offset")
 		if rerr == nil {
+			loaded := 0
 			for rows.Next() {
 				var id string
 				var offset int64
-				if rows.Scan(&id, &offset) == nil && offset+int64(vecBytes) <= int64(len(data)) {
-					vec := make([]float32, vecDim)
-					for i := 0; i < vecDim; i++ {
+				if rows.Scan(&id, &offset) == nil && offset+vecBytes <= int64(len(data)) {
+					vec := make([]float32, s.vecDim)
+					for i := 0; i < s.vecDim; i++ {
 						vec[i] = math.Float32frombits(binary.LittleEndian.Uint32(data[offset+int64(i*4):]))
 					}
 					s.vecCache.set(id, vec)
+					loaded++
 				}
 			}
 			rows.Close()
+			if loaded > 0 {
+				fmt.Printf("✅ %d vecteurs chargés (dim=%d)\n", loaded, s.vecDim)
+			}
 		}
+	}
+
+	// Avertit si la base contient des chunks sans vecteurs (indexation pré-fix)
+	var total, withVec int
+	_ = db.QueryRow("SELECT COUNT(*) FROM chunks").Scan(&total)
+	_ = db.QueryRow("SELECT COUNT(*) FROM chunks WHERE offset IS NOT NULL").Scan(&withVec)
+	if total > 0 && withVec == 0 {
+		fmt.Printf("⚠️  %d chunks sans vecteurs (base pré-fix) — recherche vectorielle inactive, relancez `rag index --clear <dossier>`\n", total)
 	}
 
 	// --- Chargement ou reconstruction de l'index HNSW ---
@@ -252,7 +287,29 @@ func (s *Store) InsertBatch(ids, texts, filenames []string, vecs [][]float32) er
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// 1. Insertion SQL locale (inchangée)
+	if len(ids) == 0 {
+		return nil
+	}
+	if len(vecs) > 0 && len(vecs[0]) > 0 {
+		dim := len(vecs[0])
+		if s.vecDim == 0 {
+			s.vecDim = dim
+			_, _ = s.db.Exec("INSERT OR REPLACE INTO meta(key, value) VALUES('vec_dim', ?)", fmt.Sprintf("%d", dim))
+			fmt.Printf("📐 Dimension vecteurs détectée : %d\n", dim)
+		} else if dim != s.vecDim {
+			return fmt.Errorf("InsertBatch: dimension incohérente %d != %d (changez de modèle d'embedding → réindexez avec --clear)", dim, s.vecDim)
+		}
+	}
+	vecBytes := s.vecDim * 4
+
+	// 1. Offset de fin de fichier pour append
+	endOff, err := s.vecs.Stat()
+	var baseOff int64
+	if err == nil {
+		baseOff = endOff.Size()
+	}
+
+	// 2. Insertion SQL avec offset
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -260,7 +317,8 @@ func (s *Store) InsertBatch(ids, texts, filenames []string, vecs [][]float32) er
 	defer tx.Rollback()
 
 	for i := range ids {
-		res, _ := tx.Exec("INSERT INTO chunks (id, text, filename) VALUES (?, ?, ?)", ids[i], texts[i], filenames[i])
+		off := baseOff + int64(i*vecBytes)
+		res, _ := tx.Exec("INSERT OR REPLACE INTO chunks (id, text, filename, offset) VALUES (?, ?, ?, ?)", ids[i], texts[i], filenames[i], off)
 		rowid, _ := res.LastInsertId()
 		tx.Exec("INSERT INTO fts_chunks(rowid, text) VALUES(?, ?)", rowid, texts[i])
 	}
@@ -268,29 +326,54 @@ func (s *Store) InsertBatch(ids, texts, filenames []string, vecs [][]float32) er
 		return err
 	}
 
-	// 2. Mise à jour HNSW locale (inchangée)
+	// 3. Append binaire des vecteurs (persistant au restart)
+	buf := make([]byte, 0, len(ids)*vecBytes)
+	tmp := make([]byte, 4)
+	for _, v := range vecs {
+		for _, f := range v {
+			binary.LittleEndian.PutUint32(tmp, math.Float32bits(f))
+			buf = append(buf, tmp...)
+		}
+	}
+	if _, err := s.vecs.WriteAt(buf, baseOff); err != nil {
+		return fmt.Errorf("InsertBatch: écriture vectors.bin: %w", err)
+	}
+
+	// 4. Cache RAM + HNSW
 	var nodes []hnsw.Node[string]
 	for i := range ids {
+		s.vecCache.set(ids[i], vecs[i])
 		nodes = append(nodes, hnsw.MakeNode(ids[i], vecs[i]))
 	}
 	s.hnswIdx.Add(nodes...)
+	s.hnswDirty = true
 
 	// ==========================================
 	return nil
 }
 
 func (s *Store) SearchSmart(query string, queryVec []float32, k int) ([]Chunk, error) {
-	fetchSize := k * 10 // Augmenté de 5→10 pour plus de recall
+	fetchSize := k * 12 // pool large pour nourrir RRF + reranker avec plus de données
+	if fetchSize < 40 {
+		fetchSize = 40
+	}
 
 	vecHits, err := s.searchVector(queryVec, fetchSize)
 	if err != nil {
 		fmt.Printf("⚠️  SearchSmart: searchVector failed: %v\n", err)
 		vecHits = nil
 	}
+	// Double passe FTS : query brute + query expansée (sans stopwords, termes techniques)
+	// → plus de rappel sur les formulations étudiant ("c'est quoi", "pourquoi ça marche pas")
 	keywordHits, err := s.fullTextSearch(query, fetchSize)
 	if err != nil {
 		fmt.Printf("⚠️  SearchSmart: fullTextSearch failed: %v\n", err)
 		keywordHits = nil
+	}
+	if expanded := expandQuery(query, s.stopWordsMap); expanded != "" && expanded != query {
+		if more, err := s.fullTextSearch(expanded, fetchSize/2); err == nil && len(more) > 0 {
+			keywordHits = append(keywordHits, more...)
+		}
 	}
 	if vecHits == nil && keywordHits == nil {
 		return nil, fmt.Errorf("SearchSmart: both search paths failed for query %q", query)
@@ -344,7 +427,7 @@ func (s *Store) SearchSmart(query string, queryVec []float32, k int) ([]Chunk, e
 
 	rerankPool := s.rerankPool
 	if rerankPool <= 0 {
-		rerankPool = 6 // fallback si mal initialisé
+		rerankPool = 12 // fallback si mal initialisé
 	}
 	if len(candidates) < rerankPool {
 		rerankPool = len(candidates)
@@ -374,18 +457,136 @@ func (s *Store) SearchSmart(query string, queryVec []float32, k int) ([]Chunk, e
 					reranked[i].Score = 0.5 * absScale
 				}
 			}
-			if len(reranked) > k {
-				reranked = reranked[:k]
-			}
+			// Diversité : MMR + plafond par fichier → évite que 8 chunks du même
+			// gros PDF noient les petits fichiers pertinents quand on augmente k
+			reranked = s.diversify(reranked, queryVec, k)
 			return reranked, nil
 		}
 	}
 
-	if len(top) > k {
-		top = top[:k]
-	}
+	top = s.diversify(top, queryVec, k)
 	return top, nil
 }
+
+// expandQuery retourne la query sans stopwords (2e passe FTS pour plus de rappel).
+func expandQuery(q string, stop map[string]bool) string {
+	var kept []string
+	for _, w := range strings.Fields(q) {
+		clean := strings.Trim(w, ".,;:!?\"'()[]")
+		if len([]rune(clean)) <= 2 {
+			continue
+		}
+		if stop[strings.ToLower(clean)] {
+			continue
+		}
+		kept = append(kept, w)
+	}
+	if len(kept) == 0 {
+		return ""
+	}
+	return strings.Join(kept, " ")
+}
+
+// diversify applique MMR (si vecteurs dispo) + plafond par fichier.
+func (s *Store) diversify(chunks []Chunk, queryVec []float32, k int) []Chunk {
+	if len(chunks) == 0 || k <= 0 {
+		return nil
+	}
+	maxPer := s.maxPerFile
+	if maxPer <= 0 {
+		maxPer = 2 // défaut : évite la noyade par un seul gros fichier
+	}
+	lambda := s.mmrLambda
+	if lambda <= 0 {
+		lambda = 0.7
+	}
+	useMMR := lambda < 1.0 && len(queryVec) > 0
+
+	var out []Chunk
+	perFile := map[string]int{}
+	// Pré-charge les vecteurs pour MMR
+	vecs := make([][]float32, len(chunks))
+	for i, c := range chunks {
+		if v, ok := s.vecCache.get(c.ID); ok {
+			vecs[i] = v
+		}
+	}
+	remaining := make([]int, len(chunks))
+	for i := range chunks {
+		remaining[i] = i
+	}
+	selected := make([][]float32, 0, k)
+
+	for len(out) < k && len(remaining) > 0 {
+		bestIdx := -1
+		var bestVal float32 = -1e30
+		for pos, ci := range remaining {
+			rel := chunks[ci].Score
+			pen := float32(0)
+			if useMMR && vecs[ci] != nil && len(selected) > 0 {
+				maxSim := float32(-1)
+				for _, sv := range selected {
+					if sim := cosineSimilarity(vecs[ci], sv); sim > maxSim {
+						maxSim = sim
+					}
+				}
+				pen = maxSim
+			}
+			val := lambda*rel - (1-lambda)*pen
+			// Pénalité douce si le fichier est déjà bien représenté
+			if perFile[chunks[ci].Filename] >= maxPer {
+				val -= 0.5
+			}
+			if val > bestVal {
+				bestVal = val
+				bestIdx = pos
+			}
+		}
+		ci := remaining[bestIdx]
+		remaining = append(remaining[:bestIdx], remaining[bestIdx+1:]...)
+		// Plafond strict : on saute le chunk si le fichier a déjà maxPer*2,
+		// mais on ne bloque pas indéfiniment si tout vient du même fichier
+		if perFile[chunks[ci].Filename] >= maxPer*2 && len(out)+len(remaining) >= k {
+			continue
+		}
+		out = append(out, chunks[ci])
+		perFile[chunks[ci].Filename]++
+		if vecs[ci] != nil {
+			selected = append(selected, vecs[ci])
+		}
+	}
+	return out
+}
+
+// Clear supprime tous les chunks, index FTS, vecteurs et HNSW (reindex propre).
+func (s *Store) Clear() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.db.Exec("DELETE FROM chunks"); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec("DELETE FROM fts_chunks"); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec("DELETE FROM meta WHERE key='vec_dim'"); err != nil {
+		return err
+	}
+	// Tronque vectors.bin
+	if err := s.vecs.Truncate(0); err != nil {
+		return err
+	}
+	s.vecCache = newLRUCache(s.vecCache.cap)
+	s.hnswIdx = hnsw.NewGraph[string]()
+	s.hnswIdx.EfSearch = 100
+	s.vecDim = 0
+	s.hnswDirty = true
+	s.saveHNSW(s.hnswIdx, s.hnswPath)
+	s.hnswDirty = false
+	return nil
+}
+
+// VecDim retourne la dimension des vecteurs indexés (0 = base vide).
+func (s *Store) VecDim() int { return s.vecDim }
 
 func (s *Store) rerankChunks(query string, chunks []Chunk) ([]Chunk, error) {
 	type rerankChunk struct {
@@ -490,6 +691,14 @@ func (s *Store) searchVector(queryVec []float32, k int) ([]Chunk, error) {
 
 // searchVectorFallback : full scan O(n) — utilisé uniquement si HNSW indisponible.
 func (s *Store) searchVectorFallback(queryVec []float32, k int) ([]Chunk, error) {
+	dim := s.vecDim
+	if dim <= 0 {
+		dim = len(queryVec)
+	}
+	if dim <= 0 {
+		dim = defaultVecDim
+	}
+	vecBytes := dim * 4
 	rows, err := s.db.Query("SELECT id, text, filename, offset FROM chunks")
 	if err != nil {
 		return nil, err
@@ -499,19 +708,22 @@ func (s *Store) searchVectorFallback(queryVec []float32, k int) ([]Chunk, error)
 	var results []Chunk
 	for rows.Next() {
 		var c Chunk
-		var offset int64
+		var offset sql.NullInt64
 		if err := rows.Scan(&c.ID, &c.Text, &c.Filename, &offset); err != nil {
 			continue
 		}
 
 		vec, ok := s.vecCache.get(c.ID)
 		if !ok {
+			if !offset.Valid {
+				continue // chunk pré-fix sans vecteur : ignoré côté vectoriel (FTS prend le relais)
+			}
 			buf := make([]byte, vecBytes)
-			if _, err := s.vecs.ReadAt(buf, offset); err != nil {
+			if _, err := s.vecs.ReadAt(buf, offset.Int64); err != nil {
 				continue
 			}
-			vec = make([]float32, vecDim)
-			for i := 0; i < vecDim; i++ {
+			vec = make([]float32, dim)
+			for i := 0; i < dim; i++ {
 				vec[i] = math.Float32frombits(binary.LittleEndian.Uint32(buf[i*4:]))
 			}
 			s.vecCache.set(c.ID, vec)
@@ -607,7 +819,10 @@ func (s *Store) fullTextSearch(query string, k int) ([]Chunk, error) {
 	seen := make(map[string]bool)
 	var dedupTech []string
 	for _, tw := range techWords {
-		if !seen[tw] { seen[tw] = true; dedupTech = append(dedupTech, tw) }
+		if !seen[tw] {
+			seen[tw] = true
+			dedupTech = append(dedupTech, tw)
+		}
 	}
 	techWords = dedupTech
 

@@ -12,11 +12,13 @@ web:
 rag:
   db_path: "~/.rag-hybrid"
   embed_model: "nomic-embed-text:latest"
-  default_model: "gemma4:latest"
-  rerank_pool: 6
+  default_model: "gemma3:4b"
+  rerank_pool: 12
   # Nombre de chunks finaux envoyés au LLM comme contexte
-  context_chunks: 5
+  context_chunks: 8
   min_score: 0.0
+  max_per_file: 2
+  mmr_lambda: 0.7
   chunk_size: 1500
   chunk_overlap: 150
   # Fusion RRF : constante de lissage (plus élevé = résultats moins sensibles au rang)
@@ -72,3 +74,46 @@ rag:
     - "Claverie_Dimitri_Rapport"
     - "TP_Sprint"
     - "TP-Sprint"
+
+search_rules:
+  technical_terms:
+    - "adcs"
+    - "admux"
+    - "tccr"
+    - "timsk"
+    - "portb"
+    - "ddrb"
+    - "ddrd"
+    - "prescaler"
+    - "registre"
+    - "register"
+    - "0x"
+    - "pwm"
+    - "uart"
+    - "spi"
+    - "i2c"
+    - "twi"
+    - "isr"
+    - "int0"
+    - "int1"
+    - "adps"
+    - "aden"
+    - "adsc"
+    - "adie"
+    - "adif"
+    - "refs"
+    - "wgm"
+    - "ocr"
+    - "icr"
+    - "tcnt"
+    - "vlan"
+    - "trunk"
+    - "switchport"
+    - "802.1x"
+    - "ddos"
+    - "slowloris"
+    - "radius"
+    - "polling"
+    - "interruption"
+    - "arduino"
+    - "atmega"

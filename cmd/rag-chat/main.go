@@ -31,6 +31,8 @@ func main() {
 		RerankPool:        cfg.RAG.RerankPool,
 		HNSWThreshold:     cfg.RAG.HNSWThreshold,
 		VecCacheSize:      cfg.RAG.VecCacheSize,
+		MaxPerFile:        cfg.RAG.MaxPerFile,
+		MMRLambda:         cfg.RAG.MMRLambda,
 		SearchRules:       cfg.SearchRules,
 	})
 	if err != nil {

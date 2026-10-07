@@ -66,6 +66,9 @@ func (idx *Indexer) Index(dir string) error {
 		}
 		all = append(all, c...)
 	}
+	// Déduplique les chunks au contenu identique (copies de fichiers, headers répétés)
+	// → base plus petite, inférence plus diversifiée
+	all = dedupChunks(all)
 	fmt.Printf("✂️  %d chunks\n", len(all))
 
 	// Taille de batch réduite à 32 pour coller à la limite Ollama /api/embed
@@ -86,8 +89,6 @@ func (idx *Indexer) Index(dir string) error {
 
 	// Buffer de résultats pour reconstruire l'ordre
 	results := make([][][]float32, len(embedBatches))
-	var mu sync.Mutex
-	_ = mu
 
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 30)
@@ -194,4 +195,28 @@ func batchChunks(c []chunker.Chunk, size int) [][]chunker.Chunk {
 		batches = append(batches, c[i:end])
 	}
 	return batches
+}
+
+// dedupChunks supprime les doublons exacts (même hash normalisé).
+func dedupChunks(chunks []chunker.Chunk) []chunker.Chunk {
+	seen := make(map[string]bool, len(chunks))
+	out := make([]chunker.Chunk, 0, len(chunks))
+	dups := 0
+	for _, c := range chunks {
+		key := strings.ToLower(strings.Join(strings.Fields(c.Text), " "))
+		if len(key) > 400 {
+			key = key[:400]
+		}
+		key += "|" + strings.ToLower(c.Filename)
+		if seen[key] {
+			dups++
+			continue
+		}
+		seen[key] = true
+		out = append(out, c)
+	}
+	if dups > 0 {
+		fmt.Printf("🧹 %d doublons supprimés\n", dups)
+	}
+	return out
 }
